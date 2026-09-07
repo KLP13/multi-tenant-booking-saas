@@ -1,0 +1,116 @@
+// Multi-Tenant Resource Booking Platform
+// Schema: Tenant → User, Resource → Booking
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+// ─────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  STAFF
+  USER
+}
+
+enum BookingStatus {
+  PENDING    // lock placed, awaiting payment
+  CONFIRMED  // stripe webhook confirmed
+  CANCELLED  // payment failed / admin cancelled
+  COMPLETED  // slot time has passed
+}
+
+model Tenant {
+  id         String     @id @default(uuid())
+  name       String
+  slug       String     @unique
+  currency           String     @default("INR")
+  address            String?
+  phone              String?
+  logoUrl            String?
+  cancellationPolicy String?    @default("Free cancellation up to 24 hours prior to booking start time.")
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  users      User[]
+  resources  Resource[]
+  bookings   Booking[]
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  tenantId     String
+  email        String
+  passwordHash String
+  name         String   @default("")
+  role         Role     @default(ADMIN)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Resource {
+  id              String    @id @default(uuid())
+  tenantId        String
+  name            String
+  description     String?
+  hourlyRateCents Int
+  capacity            Int       @default(1)
+  bufferMinutes       Int       @default(0)
+  openTime            String    @default("08:00")
+  closeTime           String    @default("20:00")
+  slotDurationMinutes Int       @default(60)
+  operatingDays       String    @default("MON,TUE,WED,THU,FRI,SAT,SUN")
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  bookings        Booking[]
+
+  @@unique([tenantId, name])
+  @@map("resources")
+}
+
+model Booking {
+  id                    String        @id @default(uuid())
+  tenantId              String
+  resourceId            String
+  userId                String?
+  customerName          String
+  customerEmail         String
+  startTime             DateTime
+  endTime               DateTime
+  status                BookingStatus @default(PENDING)
+  totalAmountCents      Int
+  stripePaymentIntentId String?       @unique
+  razorpayOrderId       String?       @unique
+  razorpayPaymentId     String?       @unique
+  lockExpiresAt         DateTime?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  tenant                Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  resource              Resource      @relation(fields: [resourceId], references: [id], onDelete: Restrict)
+  user                  User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([resourceId, status, startTime, endTime])
+  @@map("bookings")
+}
