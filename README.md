@@ -1,6 +1,7 @@
 # 🏢 Multi-Tenant Resource Booking SaaS Platform
 
 ![Node.js](https://img.shields.io/badge/Node.js-v18%2B-green?logo=node.js)
+
 ![TypeScript](https://img.shields.io/badge/TypeScript-ES2022-blue?logo=typescript)
 ![Express](https://img.shields.io/badge/Express-4.x-lightgrey?logo=express)
 ![Prisma](https://img.shields.io/badge/Prisma-ORM-2D3748?logo=prisma)
