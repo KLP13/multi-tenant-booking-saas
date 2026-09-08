@@ -16,6 +16,7 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
   const [isClosed, setIsClosed] = useState(false);
   const [closedMessage, setClosedMessage] = useState('');
   const [showConcluded, setShowConcluded] = useState(false);
+  const [periodFilter, setPeriodFilter] = useState('ALL');
 
   // Generate next 7 days for quick tabs using user's local timezone
   const dates = Array.from({ length: 7 }, (_, i) => {
@@ -70,7 +71,28 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
 
   const upcomingSlots = processedSlots.filter((s) => !s.isPast);
   const pastSlots = processedSlots.filter((s) => s.isPast);
-  const displayedSlots = isToday && !showConcluded ? upcomingSlots : processedSlots;
+  
+  const filterByPeriod = (slotList) => {
+    if (periodFilter === 'MORNING') {
+      return slotList.filter((s) => parseInt(s.startTime.split(':')[0], 10) < 12);
+    }
+    if (periodFilter === 'AFTERNOON') {
+      return slotList.filter((s) => {
+        const h = parseInt(s.startTime.split(':')[0], 10);
+        return h >= 12 && h < 17;
+      });
+    }
+    if (periodFilter === 'EVENING') {
+      return slotList.filter((s) => parseInt(s.startTime.split(':')[0], 10) >= 17);
+    }
+    return slotList;
+  };
+
+  const baseSlots = isToday && !showConcluded ? upcomingSlots : processedSlots;
+  const displayedSlots = filterByPeriod(baseSlots);
+  const availableSlotsCount = baseSlots.filter((s) => s.status === 'available' && !s.isPast).length;
+  const heldSlotsCount = baseSlots.filter((s) => s.status === 'locked' && !s.isPast).length;
+
 
   return (
     <div style={{
@@ -130,6 +152,55 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
           );
         })}
       </div>
+
+            {/* Period filter toolbar */}
+      {!loading && !isClosed && baseSlots.length > 0 && (
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '12px',
+          marginBottom: '20px',
+          padding: '10px 14px',
+          backgroundColor: 'var(--bg-alt)',
+          borderRadius: 'var(--radius-xs)',
+          border: '1px solid var(--border)',
+        }}>
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {[
+              { id: 'ALL', label: 'All Slots' },
+              { id: 'MORNING', label: 'Morning (before 12 PM)' },
+              { id: 'AFTERNOON', label: 'Afternoon (12 - 5 PM)' },
+              { id: 'EVENING', label: 'Evening (5 PM+)' },
+            ].map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setPeriodFilter(p.id)}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '11px',
+                  fontWeight: periodFilter === p.id ? '600' : '400',
+                  borderRadius: '12px',
+                  border: periodFilter === p.id ? '1px solid var(--accent)' : '1px solid var(--border)',
+                  backgroundColor: periodFilter === p.id ? 'var(--accent)' : '#FFFFFF',
+                  color: periodFilter === p.id ? '#FFFFFF' : 'var(--text-primary)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <span style={{ color: '#16A34A', fontWeight: '600' }}>? {availableSlotsCount} Open</span>
+            {heldSlotsCount > 0 && <span style={{ color: '#D97706', fontWeight: '600' }}>? {heldSlotsCount} In Checkout</span>}
+          </div>
+        </div>
+      )}
 
       {/* Slots grid */}
       {loading ? (
