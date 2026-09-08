@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
-import { acquireLock, releaseLock, isLocked } from '../lib/redis';
+import { acquireLock, releaseLock, isLocked, getLockedCount } from '../lib/redis';
 import { stripe } from '../lib/stripe';
 import { createError } from '../middleware/errorHandler';
 import { sendBookingConfirmationEmail } from '../lib/email';
@@ -10,6 +10,127 @@ const router = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/slots/lock
+// -----------------------------------------------------------------------------
+// POST /api/bookings/check-availability
+// High-precision booking slot conflict and availability engine
+// -----------------------------------------------------------------------------
+router.post('/bookings/check-availability', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { resourceId, date, startTime, endTime: customEndTime, quantity } = req.body;
+
+    if (!resourceId || !date || !startTime) {
+      throw createError(400, 'resourceId, date, and startTime are required');
+    }
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(startTime)) {
+      throw createError(400, 'Invalid date (YYYY-MM-DD) or startTime (HH:mm) format');
+    }
+
+    const resource = await prisma.resource.findUnique({
+      where: { id: resourceId },
+      include: {
+        tenant: {
+          select: {
+            id: true,
+            name: true,
+            currency: true,
+          },
+        },
+      },
+    });
+
+    if (!resource || !resource.isActive) {
+      throw createError(404, 'Resource not found or inactive');
+    }
+
+    let finalEndTime = customEndTime;
+    if (!finalEndTime) {
+      const [sh, sm] = startTime.split(':').map(Number);
+      const duration = resource.slotDurationMinutes || 60;
+      const totalMinutes = sh * 60 + sm + duration;
+      const eh = Math.floor(totalMinutes / 60);
+      const em = totalMinutes % 60;
+      finalEndTime = `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
+    }
+
+    const slotStartDt = new Date(`${date}T${startTime}:00.000Z`);
+    const slotEndDt = new Date(`${date}T${finalEndTime}:00.000Z`);
+
+    if (slotEndDt <= slotStartDt) {
+      throw createError(400, 'endTime must be after startTime');
+    }
+
+    const reqDayIndex = new Date(`${date}T12:00:00.000Z`).getDay();
+    const daysMap = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+    const currentDayCode = daysMap[reqDayIndex];
+    const operatingDays = (resource.operatingDays || 'MON,TUE,WED,THU,FRI,SAT,SUN').split(',');
+
+    if (!operatingDays.includes(currentDayCode)) {
+      return res.json({
+        available: false,
+        reason: `Resource is closed on ${currentDayCode}`,
+        resourceId,
+        date,
+        startTime,
+        endTime: finalEndTime,
+        totalCapacity: resource.capacity,
+        remainingCapacity: 0,
+      });
+    }
+
+    if (startTime < resource.openTime || finalEndTime > resource.closeTime) {
+      return res.json({
+        available: false,
+        reason: `Slot is outside operating hours (${resource.openTime} - ${resource.closeTime})`,
+        resourceId,
+        date,
+        startTime,
+        endTime: finalEndTime,
+        totalCapacity: resource.capacity,
+        remainingCapacity: 0,
+      });
+    }
+
+    const bufferMs = (resource.bufferMinutes || 0) * 60 * 1000;
+    const effectiveStartDt = new Date(slotStartDt.getTime() - bufferMs);
+    const effectiveEndDt = new Date(slotEndDt.getTime() + bufferMs);
+
+    const bookedCount = await prisma.booking.count({
+      where: {
+        resourceId,
+        status: { in: ['PENDING', 'CONFIRMED'] },
+        startTime: { lt: effectiveEndDt },
+        endTime: { gt: effectiveStartDt },
+      },
+    });
+
+    const lockedCount = await getLockedCount(resourceId, date, startTime);
+    const totalCapacity = resource.capacity || 1;
+    const remainingCapacity = Math.max(0, totalCapacity - (bookedCount + lockedCount));
+    const requestedQuantity = Math.max(1, Number(quantity) || 1);
+    const isSlotAvailable = remainingCapacity >= requestedQuantity;
+
+    res.json({
+      available: isSlotAvailable,
+      canBook: isSlotAvailable,
+      resourceId,
+      resourceName: resource.name,
+      date,
+      startTime,
+      endTime: finalEndTime,
+      totalCapacity,
+      bookedCount,
+      lockedCount,
+      remainingCapacity,
+      requestedQuantity,
+      hourlyRateCents: resource.hourlyRateCents,
+      currency: resource.tenant?.currency || 'USD',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Places a temporary 10-minute lock on a slot in Redis
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/slots/lock', async (req: Request, res: Response, next: NextFunction) => {
