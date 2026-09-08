@@ -52,49 +52,113 @@ router.get('/me', async (req: Request, res: Response, next: NextFunction) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // PUT /api/admin/profile
 // Update business settings, contact info, and cancellation policy
-// ─────────────────────────────────────────────────────────────────────────────
-router.put('/profile', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+// -----------------------------------------------------------------------------
+// GET /api/admin/resources
+// List all resources for the authenticated tenant with filtering & pagination
+// -----------------------------------------------------------------------------
+router.get('/resources', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, address, phone, logoUrl, cancellationPolicy } = req.body;
+    const { search, minCapacity, maxCapacity, isActive, page, limit, sortBy, sortOrder } = req.query;
 
-    const updated = await prisma.tenant.update({
-      where: { id: req.user!.tenantId },
-      data: {
-        ...(name && { name }),
-        ...(address !== undefined && { address }),
-        ...(phone !== undefined && { phone }),
-        ...(logoUrl !== undefined && { logoUrl }),
-        ...(cancellationPolicy !== undefined && { cancellationPolicy }),
+    const whereClause: any = {
+      tenantId: req.user!.tenantId,
+    };
+
+    if (search && typeof search === 'string') {
+      whereClause.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    if (minCapacity || maxCapacity) {
+      whereClause.capacity = {};
+      if (minCapacity) whereClause.capacity.gte = Number(minCapacity);
+      if (maxCapacity) whereClause.capacity.lte = Number(maxCapacity);
+    }
+
+    if (isActive !== undefined) {
+      whereClause.isActive = isActive === 'true';
+    }
+
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, Number(limit) || 20));
+    const skip = (pageNum - 1) * limitNum;
+
+    const sortField = typeof sortBy === 'string' && ['name', 'capacity', 'hourlyRateCents', 'createdAt'].includes(sortBy) ? sortBy : 'createdAt';
+    const sortDir = sortOrder === 'asc' ? 'asc' : 'desc';
+
+    const [total, resources] = await Promise.all([
+      prisma.resource.count({ where: whereClause }),
+      prisma.resource.findMany({
+        where: whereClause,
+        orderBy: { [sortField]: sortDir },
+        skip,
+        take: limitNum,
+      }),
+    ]);
+
+    res.json({
+      resources,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum) || 1,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// -----------------------------------------------------------------------------
+// GET /api/admin/resources/:id
+// Get single resource with booking metrics
+// -----------------------------------------------------------------------------
+router.get('/resources/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = req.params.id as string;
+    const resource = await prisma.resource.findFirst({
+      where: { id, tenantId: req.user!.tenantId },
+      include: {
+        _count: {
+          select: {
+            bookings: true,
+          },
+        },
       },
     });
 
-    res.json({ tenant: updated });
-  } catch (err) {
-    next(err);
-  }
-});
+    if (!resource) {
+      throw createError(404, 'Resource not found');
+    }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GET /api/admin/resources
-// List all resources for the authenticated tenant
-// ─────────────────────────────────────────────────────────────────────────────
-router.get('/resources', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const resources = await prisma.resource.findMany({
-      where: { tenantId: req.user!.tenantId },
-      orderBy: { createdAt: 'desc' },
+    const upcomingBookingsCount = await prisma.booking.count({
+      where: {
+        resourceId: id,
+        tenantId: req.user!.tenantId,
+        startTime: { gte: new Date() },
+        status: { in: ['CONFIRMED', 'PENDING'] },
+      },
     });
 
-    res.json({ resources });
+    res.json({
+      resource,
+      metrics: {
+        totalBookings: resource._count.bookings,
+        upcomingBookings: upcomingBookingsCount,
+      },
+    });
   } catch (err) {
     next(err);
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // POST /api/admin/resources
-// Create a new resource with custom schedule
-// ─────────────────────────────────────────────────────────────────────────────
+// Create a new resource with strict capacity and schedule validation
+// -----------------------------------------------------------------------------
 router.post('/resources', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
@@ -113,17 +177,47 @@ router.post('/resources', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Reque
       throw createError(400, 'Name and hourlyRateCents are required');
     }
 
+    const rateNum = Number(hourlyRateCents);
+    if (!Number.isInteger(rateNum) || rateNum < 0) {
+      throw createError(400, 'hourlyRateCents must be a non-negative integer');
+    }
+
+    const capNum = capacity !== undefined ? Number(capacity) : 1;
+    if (!Number.isInteger(capNum) || capNum < 1 || capNum > 1000) {
+      throw createError(400, 'Capacity must be an integer between 1 and 1000');
+    }
+
+    const bufferNum = bufferMinutes !== undefined ? Number(bufferMinutes) : 0;
+    if (!Number.isInteger(bufferNum) || bufferNum < 0 || bufferNum > 180) {
+      throw createError(400, 'bufferMinutes must be between 0 and 180');
+    }
+
+    const finalOpen = openTime || '08:00';
+    const finalClose = closeTime || '20:00';
+    const timeRegex = /^\d{2}:\d{2}$/;
+    if (!timeRegex.test(finalOpen) || !timeRegex.test(finalClose)) {
+      throw createError(400, 'openTime and closeTime must match format HH:mm');
+    }
+    if (finalOpen >= finalClose) {
+      throw createError(400, 'openTime must be before closeTime');
+    }
+
+    const durationNum = slotDurationMinutes !== undefined ? Number(slotDurationMinutes) : 60;
+    if (![15, 30, 45, 60, 90, 120].includes(durationNum)) {
+      throw createError(400, 'slotDurationMinutes must be one of: 15, 30, 45, 60, 90, 120');
+    }
+
     const resource = await prisma.resource.create({
       data: {
         tenantId: req.user!.tenantId,
-        name,
-        description: description || null,
-        hourlyRateCents: Number(hourlyRateCents),
-        capacity: Number(capacity) || 1,
-        bufferMinutes: Number(bufferMinutes) || 0,
-        openTime: openTime || '08:00',
-        closeTime: closeTime || '20:00',
-        slotDurationMinutes: Number(slotDurationMinutes) || 60,
+        name: name.trim(),
+        description: description ? description.trim() : null,
+        hourlyRateCents: rateNum,
+        capacity: capNum,
+        bufferMinutes: bufferNum,
+        openTime: finalOpen,
+        closeTime: finalClose,
+        slotDurationMinutes: durationNum,
         operatingDays: operatingDays || 'MON,TUE,WED,THU,FRI,SAT,SUN',
         isActive: true,
       },
@@ -135,9 +229,89 @@ router.post('/resources', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Reque
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // PUT /api/admin/resources/:id
-// Update a resource
+// Update a resource with capacity validation
+// -----------------------------------------------------------------------------
+router.put('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = req.params.id as string;
+    const {
+      name,
+      description,
+      hourlyRateCents,
+      capacity,
+      bufferMinutes,
+      openTime,
+      closeTime,
+      slotDurationMinutes,
+      operatingDays,
+      isActive,
+    } = req.body;
+
+    const existing = await prisma.resource.findFirst({
+      where: { id, tenantId: req.user!.tenantId },
+    });
+
+    if (!existing) {
+      throw createError(404, 'Resource not found');
+    }
+
+    if (capacity !== undefined) {
+      const capNum = Number(capacity);
+      if (!Number.isInteger(capNum) || capNum < 1 || capNum > 1000) {
+        throw createError(400, 'Capacity must be an integer between 1 and 1000');
+      }
+    }
+
+    if (hourlyRateCents !== undefined) {
+      const rateNum = Number(hourlyRateCents);
+      if (!Number.isInteger(rateNum) || rateNum < 0) {
+        throw createError(400, 'hourlyRateCents must be a non-negative integer');
+      }
+    }
+
+    if (bufferMinutes !== undefined) {
+      const bufferNum = Number(bufferMinutes);
+      if (!Number.isInteger(bufferNum) || bufferNum < 0 || bufferNum > 180) {
+        throw createError(400, 'bufferMinutes must be between 0 and 180');
+      }
+    }
+
+    const effectiveOpen = openTime || existing.openTime;
+    const effectiveClose = closeTime || existing.closeTime;
+    if (openTime || closeTime) {
+      const timeRegex = /^\d{2}:\d{2}$/;
+      if (!timeRegex.test(effectiveOpen) || !timeRegex.test(effectiveClose)) {
+        throw createError(400, 'openTime and closeTime must match format HH:mm');
+      }
+      if (effectiveOpen >= effectiveClose) {
+        throw createError(400, 'openTime must be before closeTime');
+      }
+    }
+
+    const updated = await prisma.resource.update({
+      where: { id },
+      data: {
+        ...(name !== undefined && { name: name.trim() }),
+        ...(description !== undefined && { description: description ? description.trim() : null }),
+        ...(hourlyRateCents !== undefined && { hourlyRateCents: Number(hourlyRateCents) }),
+        ...(capacity !== undefined && { capacity: Number(capacity) }),
+        ...(bufferMinutes !== undefined && { bufferMinutes: Number(bufferMinutes) }),
+        ...(openTime !== undefined && { openTime: effectiveOpen }),
+        ...(closeTime !== undefined && { closeTime: effectiveClose }),
+        ...(slotDurationMinutes !== undefined && { slotDurationMinutes: Number(slotDurationMinutes) }),
+        ...(operatingDays !== undefined && { operatingDays }),
+        ...(isActive !== undefined && { isActive: Boolean(isActive) }),
+      },
+    });
+
+    res.json({ resource: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 router.put('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
   try {
