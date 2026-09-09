@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
-import { acquireLock, releaseLock, isLocked, getLockedCount } from '../lib/redis';
+import { acquireLock, releaseLock, extendLock, isLocked, getLockedCount } from '../lib/redis';
 import { stripe } from '../lib/stripe';
 import { createError } from '../middleware/errorHandler';
 import { sendBookingConfirmationEmail } from '../lib/email';
@@ -209,6 +209,37 @@ router.post('/slots/lock', async (req: Request, res: Response, next: NextFunctio
 // DELETE /api/slots/lock
 // Release a previously acquired lock
 // ─────────────────────────────────────────────────────────────────────────────
+
+// -----------------------------------------------------------------------------
+// POST /api/slots/lock/extend
+// Extends an active Redis reservation hold for user currently completing checkout
+// -----------------------------------------------------------------------------
+router.post('/slots/lock/extend', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { resourceId, date, startTime, lockValue, extensionSeconds } = req.body;
+
+    if (!resourceId || !date || !startTime || !lockValue) {
+      throw createError(400, 'resourceId, date, startTime, and lockValue are required');
+    }
+
+    const ttl = Math.min(Number(extensionSeconds) || 600, 1800); // max 30 min
+    const extended = await extendLock(resourceId, date, startTime, lockValue, ttl);
+
+    if (!extended) {
+      throw createError(404, 'Active lock expired or does not exist');
+    }
+
+    res.json({
+      success: true,
+      message: `Lock extended for ${ttl} seconds`,
+      lockValue,
+      expiresInSeconds: ttl,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.delete('/slots/lock', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { resourceId, date, startTime, lockValue } = req.body;
@@ -389,6 +420,76 @@ router.post('/bookings/:id/payment-intent', async (req: Request, res: Response, 
 // POST /api/bookings/:id/confirm-test
 // Endpoint for testing/confirming booking without Stripe webhook in dev
 // ─────────────────────────────────────────────────────────────────────────────
+
+// -----------------------------------------------------------------------------
+// POST /api/payments/create-intent
+// Standardized alias route for creating Stripe PaymentIntents by bookingId
+// -----------------------------------------------------------------------------
+router.post('/payments/create-intent', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { bookingId } = req.body;
+    if (!bookingId) {
+      throw createError(400, 'bookingId is required in request body');
+    }
+    // Forward internally to parameter handler logic
+    req.params.id = bookingId;
+    const booking = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: { resource: true, tenant: true },
+    });
+
+    if (!booking) throw createError(404, 'Booking not found');
+    if (booking.status === 'CONFIRMED') throw createError(400, 'Booking is already confirmed');
+    if (booking.status === 'CANCELLED') throw createError(400, 'Booking has been cancelled');
+
+    const stripeKey = process.env.STRIPE_SECRET_KEY;
+    if (!stripeKey || stripeKey === 'sk_test_placeholder') {
+      const mockIntentId = `pi_mock_${booking.id.replace(/-/g, '').slice(0, 16)}`;
+      const mockClientSecret = `${mockIntentId}_secret_mock`;
+      await prisma.booking.update({
+        where: { id: bookingId },
+        data: { stripePaymentIntentId: mockIntentId },
+      });
+      return res.json({
+        clientSecret: mockClientSecret,
+        paymentIntentId: mockIntentId,
+        amount: booking.totalAmountCents,
+        currency: booking.tenant.currency.toLowerCase(),
+        publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_placeholder',
+        isMock: true,
+      });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: booking.totalAmountCents,
+      currency: booking.tenant.currency.toLowerCase(),
+      metadata: {
+        bookingId: booking.id,
+        tenantId: booking.tenantId,
+        resourceId: booking.resourceId,
+      },
+      receipt_email: booking.customerEmail,
+      description: `Booking for ${booking.resource.name} (${booking.tenant.name})`,
+    });
+
+    await prisma.booking.update({
+      where: { id: bookingId },
+      data: { stripePaymentIntentId: paymentIntent.id },
+    });
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      paymentIntentId: paymentIntent.id,
+      amount: booking.totalAmountCents,
+      currency: booking.tenant.currency.toLowerCase(),
+      publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || 'pk_test_placeholder',
+      isMock: false,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/bookings/:id/confirm-test', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
