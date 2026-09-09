@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
-import { acquireLock, releaseLock, isLocked, getLockedCount } from '../lib/redis';
+import { acquireLock, releaseLock, extendLock, isLocked, getLockedCount } from '../lib/redis';
 import { stripe } from '../lib/stripe';
 import { createError } from '../middleware/errorHandler';
 import { sendBookingConfirmationEmail } from '../lib/email';
@@ -209,6 +209,37 @@ router.post('/slots/lock', async (req: Request, res: Response, next: NextFunctio
 // DELETE /api/slots/lock
 // Release a previously acquired lock
 // ─────────────────────────────────────────────────────────────────────────────
+
+// -----------------------------------------------------------------------------
+// POST /api/slots/lock/extend
+// Extends an active Redis reservation hold for user currently completing checkout
+// -----------------------------------------------------------------------------
+router.post('/slots/lock/extend', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { resourceId, date, startTime, lockValue, extensionSeconds } = req.body;
+
+    if (!resourceId || !date || !startTime || !lockValue) {
+      throw createError(400, 'resourceId, date, startTime, and lockValue are required');
+    }
+
+    const ttl = Math.min(Number(extensionSeconds) || 600, 1800); // max 30 min
+    const extended = await extendLock(resourceId, date, startTime, lockValue, ttl);
+
+    if (!extended) {
+      throw createError(404, 'Active lock expired or does not exist');
+    }
+
+    res.json({
+      success: true,
+      message: `Lock extended for ${ttl} seconds`,
+      lockValue,
+      expiresInSeconds: ttl,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.delete('/slots/lock', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { resourceId, date, startTime, lockValue } = req.body;

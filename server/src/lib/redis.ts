@@ -19,22 +19,22 @@ try {
       lazyConnect: true,
     });
     redisClient.connect().catch(() => {
-      console.warn('⚠️ Local Redis not running.');
+      console.warn('[Redis] Local Redis not running, using in-memory distributed locks fallback.');
     });
   }
 
   redisClient.on('connect', () => {
     isRedisConnected = true;
-    console.log('✅ Connected to Upstash Redis successfully!');
+    console.log('[Redis] Connected to Upstash Redis successfully.');
   });
 
   redisClient.on('error', (err) => {
     if (isRedisConnected) {
-      console.error('❌ Redis error:', err.message);
+      console.error('[Redis] Connection error:', err.message);
     }
   });
 } catch (err) {
-  console.error('❌ Redis init error:', err);
+  console.error('[Redis] Initialization error:', err);
 }
 
 export const redis = redisClient;
@@ -181,6 +181,44 @@ export async function acquireLock(
 /**
  * Release a specific lock hold
  */
+
+/**
+ * Extend an existing lock holding TTL for an active session
+ */
+export async function extendLock(
+  resourceId: string,
+  date: string,
+  startTime: string,
+  lockValue: string,
+  extensionSeconds = LOCK_TTL_SECONDS
+): Promise<boolean> {
+  const key = buildLockKey(resourceId, date, startTime);
+  const now = Date.now();
+  const expiresAt = now + extensionSeconds * 1000;
+
+  if (redis && isRedisConnected) {
+    try {
+      const exists = await redis.hexists(key, lockValue);
+      if (exists) {
+        await redis.hset(key, lockValue, expiresAt.toString());
+        await redis.expire(key, extensionSeconds);
+        return true;
+      }
+      return false;
+    } catch {
+      // Fallback to memory
+    }
+  }
+
+  cleanExpiredMemoryLocks(key);
+  const locks = memoryMultiLocks.get(key);
+  if (locks && locks.has(lockValue)) {
+    locks.set(lockValue, expiresAt);
+    return true;
+  }
+  return false;
+}
+
 export async function releaseLock(
   resourceId: string,
   date: string,
