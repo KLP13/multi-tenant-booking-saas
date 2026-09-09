@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import nodemailer, { Transporter } from 'nodemailer';
 
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
@@ -30,12 +32,90 @@ function getTransporter(): Transporter {
 }
 
 /**
+ * Universal email dispatcher: Resend API -> SMTP -> Dev fallback
+ */
+export async function sendEmailMessage(options: {
+  from?: string;
+  to: string;
+  subject: string;
+  text?: string;
+  html: string;
+}): Promise<void> {
+  const fromAddress =
+    process.env.EMAIL_FROM ||
+    options.from ||
+    process.env.SMTP_FROM ||
+    'Bespoke Bookings <onboarding@resend.dev>';
+
+  // 1. Direct Resend API Delivery
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const res = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromAddress,
+          to: [options.to],
+          subject: options.subject,
+          text: options.text,
+          html: options.html,
+        }),
+      });
+
+      const data = (await res.json()) as any;
+      if (res.ok) {
+        console.log(`📧 [EMAIL SENT VIA RESEND] To: ${options.to} (ID: ${data.id})`);
+        return;
+      } else {
+        console.warn(`⚠️ [Resend Notice] ${data.message || 'Validation error'}`);
+      }
+    } catch (err) {
+      console.error('Failed to send email via Resend API:', err);
+    }
+  }
+
+  // 2. SMTP Delivery (if SMTP credentials provided)
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const mailer = getTransporter();
+      await mailer.sendMail({
+        from: fromAddress,
+        to: options.to,
+        subject: options.subject,
+        text: options.text,
+        html: options.html,
+      });
+      return;
+    } catch (err) {
+      console.error('Failed to send email via SMTP:', err);
+    }
+  }
+
+  // 3. Fallback Dev Transport
+  try {
+    const mailer = getTransporter();
+    await mailer.sendMail({
+      from: fromAddress,
+      to: options.to,
+      subject: options.subject,
+      text: options.text,
+      html: options.html,
+    });
+  } catch (err) {
+    console.error('Dev email error:', err);
+  }
+}
+
+/**
  * Sends a 6-digit verification OTP to the registering tenant
  */
 export async function sendRegistrationOtp(email: string, otp: string, businessName: string): Promise<void> {
   const mailer = getTransporter();
 
-  const isDev = !process.env.SMTP_HOST;
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px;">
@@ -67,7 +147,7 @@ export async function sendRegistrationOtp(email: string, otp: string, businessNa
   `;
 
   if (isDev) {
-    console.log('\n──────────────────────────────────────────────────');
+    console.log('\n--------------------------------------------------');
     console.log(`📧 [DEV EMAIL] Registration OTP for: ${email}`);
     console.log(`🏢 Business: ${businessName}`);
     console.log(`🔑 Verification Code: ${otp}`);
@@ -75,7 +155,7 @@ export async function sendRegistrationOtp(email: string, otp: string, businessNa
   }
 
   try {
-    await mailer.sendMail({
+    await sendEmailMessage({
       from: process.env.SMTP_FROM || '"Bespoke Bookings" <noreply@bespokebookings.com>',
       to: email,
       subject: `Your Verification Code: ${otp} - ${businessName || 'Bespoke Bookings'}`,
@@ -92,7 +172,7 @@ export async function sendRegistrationOtp(email: string, otp: string, businessNa
  */
 export async function sendWelcomeBusinessEmail(email: string, businessName: string, slug: string): Promise<void> {
   const mailer = getTransporter();
-  const isDev = !process.env.SMTP_HOST;
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
 
   const publicUrl = `${CLIENT_URL}/${slug}`;
   const adminUrl = `${CLIENT_URL}/${slug}/admin`;
@@ -161,7 +241,7 @@ export async function sendWelcomeBusinessEmail(email: string, businessName: stri
   `;
 
   if (isDev) {
-    console.log('\n──────────────────────────────────────────────────');
+    console.log('\n--------------------------------------------------');
     console.log(`📬 [DEV EMAIL] Welcome Email sent to: ${email}`);
     console.log(`🏢 Business: ${businessName}`);
     console.log(`🌐 Public Portal: ${publicUrl}`);
@@ -170,7 +250,7 @@ export async function sendWelcomeBusinessEmail(email: string, businessName: stri
   }
 
   try {
-    await mailer.sendMail({
+    await sendEmailMessage({
       from: process.env.SMTP_FROM || '"Bespoke Bookings" <noreply@bespokebookings.com>',
       to: email,
       subject: `🎉 Your Booking Portal is Ready: ${businessName}`,
@@ -260,20 +340,21 @@ export async function sendBookingConfirmationEmail(params: {
   };
 }): Promise<void> {
   const mailer = getTransporter();
-  const isDev = !process.env.SMTP_HOST;
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
 
   const { booking, resource, tenant } = params;
   const start = new Date(booking.startTime);
   const end = new Date(booking.endTime);
 
   const dateStr = start.toLocaleDateString('en-US', {
+    timeZone: 'UTC',
     weekday: 'short',
     month: 'short',
     day: 'numeric',
     year: 'numeric',
   });
 
-  const timeStr = `${start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })} - ${end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+  const timeStr = `${start.toLocaleTimeString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true })} - ${end.toLocaleTimeString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true })}`;
   const totalInr = (booking.totalAmountCents / 100).toFixed(2);
   const myBookingsUrl = `${CLIENT_URL}/${tenant.slug}`;
   const gCalDates = `${start.toISOString().replace(/[-:]/g, '').split('.')[0]}Z/${end.toISOString().replace(/[-:]/g, '').split('.')[0]}Z`;
@@ -349,7 +430,7 @@ export async function sendBookingConfirmationEmail(params: {
   `;
 
   if (isDev) {
-    console.log('\n──────────────────────────────────────────────────');
+    console.log('\n--------------------------------------------------');
     console.log(`🧾 [DEV EMAIL] Booking Confirmation Receipt sent to: ${booking.customerEmail}`);
     console.log(`🏢 Business: ${tenant.name}`);
     console.log(`📦 Resource: ${resource.name}`);
@@ -360,7 +441,7 @@ export async function sendBookingConfirmationEmail(params: {
   }
 
   try {
-    await mailer.sendMail({
+    await sendEmailMessage({
       from: process.env.SMTP_FROM || `"${tenant.name}" <noreply@bespokebookings.com>`,
       to: booking.customerEmail,
       subject: `✅ Booking Confirmed: ${resource.name} at ${tenant.name}`,
@@ -392,11 +473,11 @@ export async function sendBookingCancellationEmail(params: {
   };
 }): Promise<void> {
   const mailer = getTransporter();
-  const isDev = !process.env.SMTP_HOST;
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
 
   const { booking, resource, tenant } = params;
   const start = new Date(booking.startTime);
-  const dateStr = start.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+  const dateStr = start.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 580px; margin: 0 auto; padding: 32px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 8px;">
@@ -420,7 +501,7 @@ export async function sendBookingCancellationEmail(params: {
   `;
 
   if (isDev) {
-    console.log('\n──────────────────────────────────────────────────');
+    console.log('\n--------------------------------------------------');
     console.log(`❌ [DEV EMAIL] Booking Cancellation sent to: ${booking.customerEmail}`);
     console.log(`🏢 Business: ${tenant.name}`);
     console.log(`📦 Resource: ${resource.name}`);
@@ -429,7 +510,7 @@ export async function sendBookingCancellationEmail(params: {
   }
 
   try {
-    await mailer.sendMail({
+    await sendEmailMessage({
       from: process.env.SMTP_FROM || `"${tenant.name}" <noreply@bespokebookings.com>`,
       to: booking.customerEmail,
       subject: `❌ Reservation Cancelled: ${resource.name} at ${tenant.name}`,
@@ -441,3 +522,62 @@ export async function sendBookingCancellationEmail(params: {
   }
 }
 
+
+/**
+ * Sends a 6-digit password reset code to a user
+ */
+export async function sendPasswordResetEmail(email: string, otp: string, businessName = 'Bespoke Bookings'): Promise<void> {
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 36px; background-color: #FAF7F2; border: 1px solid #EBE5DC; border-radius: 8px;">
+      <div style="margin-bottom: 24px; border-bottom: 1px solid #E5DFD5; padding-bottom: 16px;">
+        <span style="font-size: 20px; font-weight: 700; color: #171717; font-family: Georgia, serif;">${businessName}</span>
+      </div>
+
+      <h2 style="font-size: 22px; color: #171717; margin-bottom: 10px; font-family: Georgia, serif; font-weight: 600;">Reset Your Password</h2>
+      <p style="font-size: 14px; color: #5C5549; line-height: 1.6; margin-bottom: 24px;">
+        We received a request to reset the password for your account associated with <strong>${email}</strong>. Use the 6-digit verification code below to set a new password:
+      </p>
+
+      <div style="background-color: #FFFFFF; border: 1px solid #E5DFD5; border-radius: 6px; padding: 24px; text-align: center; margin-bottom: 24px; box-shadow: 0 2px 4px rgba(0,0,0,0.02);">
+        <div style="font-size: 11px; font-weight: 700; color: #8A8275; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px;">
+          Password Reset Verification Code
+        </div>
+        <div style="font-family: 'Courier New', Courier, monospace; font-size: 34px; font-weight: 700; letter-spacing: 8px; color: #C1502E; margin: 4px 0;">
+          ${otp}
+        </div>
+        <div style="font-size: 12px; color: #8A8275; margin-top: 8px;">
+          This code expires in 15 minutes.
+        </div>
+      </div>
+
+      <p style="font-size: 13px; color: #7A7265; line-height: 1.5; margin-bottom: 24px;">
+        If you did not request this password reset, you can safely ignore this email. Your current password will remain unchanged and your account is secure.
+      </p>
+
+      <div style="border-top: 1px solid #E5DFD5; padding-top: 16px; font-size: 12px; color: #A8A297;">
+        &copy; ${businessName} &bull; Powered by Bespoke Bookings Platform
+      </div>
+    </div>
+  `;
+
+  if (isDev) {
+    console.log('\n--------------------------------------------------');
+    console.log(`[DEV EMAIL] Password Reset OTP sent to: ${email}`);
+    console.log(`Code: ${otp}`);
+    console.log('--------------------------------------------------\n');
+  }
+
+  try {
+    await sendEmailMessage({
+      from: process.env.SMTP_FROM || `"${businessName}" <noreply@bespokebookings.com>`,
+      to: email,
+      subject: `Reset your password for ${businessName} (Code: ${otp})`,
+      text: `Your password reset code for ${businessName} is: ${otp}. It expires in 15 minutes.`,
+      html,
+    });
+  } catch (err) {
+    console.error('Failed to send password reset email:', err);
+  }
+}

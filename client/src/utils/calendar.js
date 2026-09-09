@@ -27,7 +27,7 @@ export function generateGoogleCalendarUrl({ title, description, location, date, 
     if (isNaN(endDt.getTime())) endDt = new Date(startDt.getTime() + 60 * 60 * 1000);
 
     const formatGoogle = (dt) => {
-      return dt.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+      return dt.toISOString().replace(/[-:]/g, '').split('.')[0];
     };
 
     const datesParam = `${formatGoogle(startDt)}/${formatGoogle(endDt)}`;

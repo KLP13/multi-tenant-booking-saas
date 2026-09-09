@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../../api/client';
 import {
+  RotateCw,
   IndianRupee,
   CalendarCheck,
   Building2,
@@ -43,6 +44,7 @@ export default function AdminDashboardPage() {
 
   const isStaff = currentUser?.role === 'STAFF';
   const effectiveSlug = currentUser?.tenant?.slug || tenantSlug;
+  const tenant = currentUser?.tenant;
 
   const handleCopyPublicLink = () => {
     const fullUrl = `${window.location.origin}/${effectiveSlug}`;
@@ -348,208 +350,598 @@ export default function AdminDashboardPage() {
   ];
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
-      {/* Admin Top Header */}
-      <header style={{
-        backgroundColor: '#FFFFFF',
-        borderBottom: '1px solid var(--border)',
-        padding: '0 32px',
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', height: '70px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-            <div style={{
+    <div className="admin-layout" style={{ display: 'flex', minHeight: '100vh', backgroundColor: 'var(--bg)' }}>
+      {/* LEFT SIDEBAR NAVIGATION */}
+      <aside
+        className="admin-sidebar"
+        style={{
+          width: '260px',
+          minWidth: '260px',
+          backgroundColor: '#FAF7F2',
+          borderRight: '1px solid var(--border)',
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
+          zIndex: 50,
+        }}
+      >
+        {/* Brand / Business Header */}
+        <div
+          className="admin-sidebar-brand"
+          style={{
+            padding: '20px 18px',
+            borderBottom: '1px solid var(--border)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+          }}
+        >
+          <div
+            style={{
               backgroundColor: 'var(--accent)',
               color: '#FFFFFF',
-              width: '36px',
-              height: '36px',
-              borderRadius: '2px',
+              width: '38px',
+              height: '38px',
+              borderRadius: 'var(--radius-xs, 2px)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               fontFamily: 'var(--font-serif)',
+              fontWeight: '700',
               fontSize: '18px',
-              fontWeight: '600',
-            }}>
-              {currentUser?.tenant?.name?.charAt(0) || 'B'}
-            </div>
-            <div>
-              <h3 style={{ fontSize: '18px' }}>{currentUser?.tenant?.name || 'Business'} Portal</h3>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                Logged in as <strong>{currentUser?.email}</strong> ({currentUser?.role})
-              </span>
-            </div>
+              flexShrink: 0,
+              boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+            }}
+          >
+            {tenant?.name ? tenant.name.charAt(0).toUpperCase() : 'B'}
           </div>
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <button
-              onClick={handleCopyPublicLink}
-              className="btn btn-outline"
+          <div style={{ overflow: 'hidden', minWidth: 0, flex: 1 }}>
+            <div
               style={{
-                fontSize: '13px',
+                fontWeight: '600',
+                fontSize: '14px',
+                color: 'var(--text-primary)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {tenant?.name || 'Booking Platform'}
+            </div>
+            <div
+              style={{
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '6px',
-                backgroundColor: copiedLink ? '#ECFDF5' : '#FFFFFF',
-                borderColor: copiedLink ? '#10B981' : 'var(--border)',
-                color: copiedLink ? '#047857' : 'inherit',
+                marginTop: '1px',
               }}
             >
-              {copiedLink ? <Check size={14} color="#047857" /> : <Copy size={14} />}
-              {copiedLink ? 'Link Copied!' : 'Copy Public Link'}
-            </button>
-            <Link to={`/${effectiveSlug}`} target="_blank" className="btn btn-outline" style={{ fontSize: '13px' }}>
-              <ExternalLink size={14} /> View Public Page
-            </Link>
-            <button onClick={handleLogout} className="btn btn-ghost" style={{ fontSize: '13px' }}>
-              <LogOut size={14} /> Sign Out
-            </button>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content Area */}
-      <main className="container" style={{ padding: '36px 24px', flex: '1' }}>
-        {/* Metric Cards */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: '16px',
-          marginBottom: '32px',
-        }}>
-          {!isStaff ? (
-            <div className="metric-card">
-              <div className="metric-label">TOTAL CONFIRMED REVENUE</div>
-              <div className="metric-value">
-                ₹{((analytics?.totalRevenueCents || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-              </div>
-              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                Currency: {analytics?.currency || 'INR'}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                /{effectiveSlug}
+              </span>
+              <span
+                style={{
+                  backgroundColor: '#EDF4ED',
+                  color: '#4A6B4A',
+                  fontSize: '9px',
+                  fontWeight: '600',
+                  padding: '1px 5px',
+                  borderRadius: '2px',
+                  letterSpacing: '0.04em',
+                }}
+              >
+                LIVE
               </span>
             </div>
-          ) : (
-            <div className="metric-card" style={{ borderColor: 'var(--accent)' }}>
-              <div className="metric-label" style={{ color: 'var(--accent)' }}>STAFF ACCESS LEVEL</div>
-              <div className="metric-value" style={{ fontSize: '20px' }}>Front-Desk Mode</div>
-              <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                Check-ins & Daily Schedule View Only
-              </span>
-            </div>
-          )}
-
-          <div className="metric-card">
-            <div className="metric-label">TOTAL RESERVATIONS</div>
-            <div className="metric-value">{analytics?.totalBookings || 0}</div>
-            <span style={{ fontSize: '11px', color: 'var(--success)' }}>
-              {analytics?.confirmedBookings || 0} confirmed
-            </span>
-          </div>
-
-          <div className="metric-card">
-            <div className="metric-label">ACTIVE BOOKABLE RESOURCES</div>
-            <div className="metric-value">{resources.filter(r => r.isActive).length}</div>
-            <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-              out of {resources.length} total
-            </span>
           </div>
         </div>
 
-        {/* Tab Navigation */}
-        <div style={{
-          display: 'flex',
-          gap: '8px',
-          borderBottom: '1px solid var(--border)',
-          marginBottom: '24px',
-        }}>
+        {/* Sidebar Nav Items */}
+        <div
+          className="admin-sidebar-nav"
+          style={{
+            padding: '16px 12px',
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            overflowY: 'auto',
+          }}
+        >
+          <div
+            style={{
+              fontSize: '10px',
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              color: '#8A8275',
+              padding: '6px 12px 4px',
+            }}
+          >
+            Operations
+          </div>
+
           <button
             onClick={() => setActiveTab('bookings')}
+            className={`admin-nav-item ${activeTab === 'bookings' ? 'active' : ''}`}
             style={{
-              padding: '12px 20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              width: '100%',
+              padding: '9px 12px',
+              borderRadius: 'var(--radius-xs, 2px)',
+              border: activeTab === 'bookings' ? '1px solid var(--border)' : '1px solid transparent',
+              backgroundColor: activeTab === 'bookings' ? '#FFFFFF' : 'transparent',
+              color: activeTab === 'bookings' ? 'var(--text-primary)' : '#333333',
               fontFamily: 'var(--font-sans)',
-              fontSize: '14px',
-              fontWeight: '500',
-              background: 'none',
-              border: 'none',
-              borderBottom: activeTab === 'bookings' ? '2px solid var(--accent)' : '2px solid transparent',
-              color: activeTab === 'bookings' ? 'var(--accent)' : 'var(--text-secondary)',
+              fontSize: '13.5px',
+              fontWeight: activeTab === 'bookings' ? 600 : 500,
               cursor: 'pointer',
+              textAlign: 'left',
+              boxShadow: activeTab === 'bookings' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none',
+              transition: 'all 0.15s ease',
             }}
           >
-            Reservations & Bookings
+            <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <CalendarCheck size={16} color={activeTab === 'bookings' ? 'var(--accent)' : '#4A4036'} />
+              <span>Bookings & Schedule</span>
+            </span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 600,
+                padding: '2px 7px',
+                borderRadius: '10px',
+                backgroundColor: activeTab === 'bookings' ? 'var(--accent-light)' : '#E8E1D5',
+                color: activeTab === 'bookings' ? 'var(--accent)' : '#4A4036',
+              }}
+            >
+              {bookings.length}
+            </span>
           </button>
+
           <button
             onClick={() => setActiveTab('resources')}
+            className={`admin-nav-item ${activeTab === 'resources' ? 'active' : ''}`}
             style={{
-              padding: '12px 20px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              width: '100%',
+              padding: '9px 12px',
+              borderRadius: 'var(--radius-xs, 2px)',
+              border: activeTab === 'resources' ? '1px solid var(--border)' : '1px solid transparent',
+              backgroundColor: activeTab === 'resources' ? '#FFFFFF' : 'transparent',
+              color: activeTab === 'resources' ? 'var(--text-primary)' : '#333333',
               fontFamily: 'var(--font-sans)',
-              fontSize: '14px',
-              fontWeight: '500',
-              background: 'none',
-              border: 'none',
-              borderBottom: activeTab === 'resources' ? '2px solid var(--accent)' : '2px solid transparent',
-              color: activeTab === 'resources' ? 'var(--accent)' : 'var(--text-secondary)',
+              fontSize: '13.5px',
+              fontWeight: activeTab === 'resources' ? 600 : 500,
               cursor: 'pointer',
+              textAlign: 'left',
+              boxShadow: activeTab === 'resources' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none',
+              transition: 'all 0.15s ease',
             }}
           >
-            Resources & Inventory ({resources.length})
+            <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <Building2 size={16} color={activeTab === 'resources' ? 'var(--accent)' : '#4A4036'} />
+              <span>Resources & Inventory</span>
+            </span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 600,
+                padding: '2px 7px',
+                borderRadius: '10px',
+                backgroundColor: activeTab === 'resources' ? 'var(--accent-light)' : '#E8E1D5',
+                color: activeTab === 'resources' ? 'var(--accent)' : '#4A4036',
+              }}
+            >
+              {resources.length}
+            </span>
           </button>
+
           {!isStaff && (
             <button
               onClick={() => setActiveTab('analytics')}
+              className={`admin-nav-item ${activeTab === 'analytics' ? 'active' : ''}`}
               style={{
-                padding: '12px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: 'var(--radius-xs, 2px)',
+                border: activeTab === 'analytics' ? '1px solid var(--border)' : '1px solid transparent',
+                backgroundColor: activeTab === 'analytics' ? '#FFFFFF' : 'transparent',
+                color: activeTab === 'analytics' ? 'var(--text-primary)' : '#333333',
                 fontFamily: 'var(--font-sans)',
-                fontSize: '14px',
-                fontWeight: '500',
-                background: 'none',
-                border: 'none',
-                borderBottom: activeTab === 'analytics' ? '2px solid var(--accent)' : '2px solid transparent',
-                color: activeTab === 'analytics' ? 'var(--accent)' : 'var(--text-secondary)',
+                fontSize: '13.5px',
+                fontWeight: activeTab === 'analytics' ? 600 : 500,
                 cursor: 'pointer',
+                textAlign: 'left',
+                boxShadow: activeTab === 'analytics' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none',
+                transition: 'all 0.15s ease',
               }}
             >
-              Analytics & Occupancy
+              <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Clock size={16} color={activeTab === 'analytics' ? 'var(--accent)' : '#4A4036'} />
+                <span>Analytics & Occupancy</span>
+              </span>
             </button>
           )}
+
+          {!isStaff && (
+            <div
+              style={{
+                fontSize: '10px',
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                color: '#8A8275',
+                padding: '14px 12px 4px',
+              }}
+            >
+              Administration
+            </div>
+          )}
+
           {!isStaff && (
             <button
               onClick={() => setActiveTab('team')}
+              className={`admin-nav-item ${activeTab === 'team' ? 'active' : ''}`}
               style={{
-                padding: '12px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: 'var(--radius-xs, 2px)',
+                border: activeTab === 'team' ? '1px solid var(--border)' : '1px solid transparent',
+                backgroundColor: activeTab === 'team' ? '#FFFFFF' : 'transparent',
+                color: activeTab === 'team' ? 'var(--text-primary)' : '#333333',
                 fontFamily: 'var(--font-sans)',
-                fontSize: '14px',
-                fontWeight: '500',
-                background: 'none',
-                border: 'none',
-                borderBottom: activeTab === 'team' ? '2px solid var(--accent)' : '2px solid transparent',
-                color: activeTab === 'team' ? 'var(--accent)' : 'var(--text-secondary)',
+                fontSize: '13.5px',
+                fontWeight: activeTab === 'team' ? 600 : 500,
                 cursor: 'pointer',
+                textAlign: 'left',
+                boxShadow: activeTab === 'team' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none',
+                transition: 'all 0.15s ease',
               }}
             >
-              Team & Staff ({teamMembers.length})
+              <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Users size={16} color={activeTab === 'team' ? 'var(--accent)' : '#4A4036'} />
+                <span>Team & Staff</span>
+              </span>
+              <span
+                style={{
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  padding: '2px 7px',
+                  borderRadius: '10px',
+                  backgroundColor: activeTab === 'team' ? 'var(--accent-light)' : '#E8E1D5',
+                  color: activeTab === 'team' ? 'var(--accent)' : '#4A4036',
+                }}
+              >
+                {teamMembers.length}
+              </span>
             </button>
           )}
+
           {!isStaff && (
             <button
               onClick={() => setActiveTab('settings')}
+              className={`admin-nav-item ${activeTab === 'settings' ? 'active' : ''}`}
               style={{
-                padding: '12px 20px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: 'var(--radius-xs, 2px)',
+                border: activeTab === 'settings' ? '1px solid var(--border)' : '1px solid transparent',
+                backgroundColor: activeTab === 'settings' ? '#FFFFFF' : 'transparent',
+                color: activeTab === 'settings' ? 'var(--text-primary)' : '#333333',
                 fontFamily: 'var(--font-sans)',
-                fontSize: '14px',
-                fontWeight: '500',
-                background: 'none',
-                border: 'none',
-                borderBottom: activeTab === 'settings' ? '2px solid var(--accent)' : '2px solid transparent',
-                color: activeTab === 'settings' ? 'var(--accent)' : 'var(--text-secondary)',
+                fontSize: '13.5px',
+                fontWeight: activeTab === 'settings' ? 600 : 500,
                 cursor: 'pointer',
+                textAlign: 'left',
+                boxShadow: activeTab === 'settings' ? '0 1px 3px rgba(0,0,0,0.04)' : 'none',
+                transition: 'all 0.15s ease',
               }}
             >
-              Business Settings & Policies
+              <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <Settings size={16} color={activeTab === 'settings' ? 'var(--accent)' : '#4A4036'} />
+                <span>Business Settings</span>
+              </span>
             </button>
           )}
         </div>
 
-        {/* TAB 1: BOOKINGS TABLE */}
-        {activeTab === 'bookings' && (
+        {/* Sidebar Footer */}
+        <div
+          className="admin-sidebar-footer"
+          style={{
+            padding: '16px',
+            borderTop: '1px solid var(--border)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            backgroundColor: '#F5EFE6',
+          }}
+        >
+          <div
+            style={{
+              padding: '10px 12px',
+              backgroundColor: '#FFFFFF',
+              borderRadius: 'var(--radius-xs, 2px)',
+              border: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '2px',
+            }}
+          >
+            <div
+              style={{
+                fontSize: '12px',
+                fontWeight: '600',
+                color: 'var(--text-primary)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              {currentUser?.email}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              Role: <strong style={{ color: 'var(--accent)' }}>{currentUser?.role}</strong>
+            </div>
+          </div>
+
+          <button
+            onClick={handleCopyPublicLink}
+            className="btn btn-outline"
+            style={{
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '7px 10px',
+              backgroundColor: copiedLink ? '#EDF4ED' : '#FFFFFF',
+              borderColor: copiedLink ? '#4A6B4A' : 'var(--border)',
+              color: copiedLink ? '#4A6B4A' : 'var(--text-primary)',
+            }}
+          >
+            {copiedLink ? <Check size={13} color="#4A6B4A" /> : <Copy size={13} />}
+            {copiedLink ? 'Link Copied!' : 'Copy Public Link'}
+          </button>
+
+          <Link
+            to={`/${effectiveSlug}`}
+            target="_blank"
+            className="btn btn-outline"
+            style={{
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '7px 10px',
+              backgroundColor: '#FFFFFF',
+              borderColor: 'var(--border)',
+              textDecoration: 'none',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <ExternalLink size={13} /> View Live Portal
+          </Link>
+
+          <button
+            onClick={handleLogout}
+            className="btn btn-ghost"
+            style={{
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '6px',
+              padding: '6px 10px',
+              color: '#A33B2E',
+              cursor: 'pointer',
+            }}
+          >
+            <LogOut size={13} /> Sign Out
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN CONTENT AREA */}
+      <main className="admin-main" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        {/* TOPBAR */}
+        <header
+          className="admin-topbar"
+          style={{
+            height: '64px',
+            borderBottom: '1px solid var(--border)',
+            backgroundColor: '#FAF7F2',
+            padding: '0 32px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            position: 'sticky',
+            top: 0,
+            zIndex: 40,
+          }}
+        >
+          <div>
+            <h1
+              style={{
+                margin: 0,
+                fontSize: '17px',
+                fontFamily: 'var(--font-serif)',
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              {activeTab === 'bookings' && 'Reservations & Bookings'}
+              {activeTab === 'resources' && 'Resources & Inventory'}
+              {activeTab === 'analytics' && 'Analytics & Occupancy'}
+              {activeTab === 'team' && 'Team & Staff Management'}
+              {activeTab === 'settings' && 'Business Settings & Policies'}
+            </h1>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+              Real-time operational dashboard for {tenant?.name || 'your business'}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {activeTab === 'bookings' && (
+              <>
+                <button
+                  onClick={() => setShowBlockModal(true)}
+                  className="btn btn-outline"
+                  style={{ fontSize: '12px', padding: '6px 12px', color: 'var(--accent)', borderColor: 'var(--accent)', backgroundColor: '#FFFFFF' }}
+                >
+                  <Ban size={13} /> Block Slot
+                </button>
+                <button
+                  onClick={handleExportCSV}
+                  className="btn btn-outline"
+                  style={{ fontSize: '12px', padding: '6px 12px', backgroundColor: '#FFFFFF' }}
+                >
+                  <Download size={13} /> Export CSV
+                </button>
+              </>
+            )}
+
+            {activeTab === 'resources' && (
+              <button
+                onClick={() => setShowAddResource(true)}
+                className="btn btn-primary"
+                style={{ fontSize: '12px', padding: '6px 12px' }}
+              >
+                <Plus size={13} /> Add Resource
+              </button>
+            )}
+
+            {activeTab === 'team' && (
+              <button
+                onClick={() => setShowInviteModal(true)}
+                className="btn btn-primary"
+                style={{ fontSize: '12px', padding: '6px 12px' }}
+              >
+                <UserPlus size={13} /> Invite Member
+              </button>
+            )}
+
+            <button
+              onClick={loadData}
+              className="btn btn-ghost"
+              style={{ fontSize: '12px', padding: '6px 10px', color: 'var(--text-secondary)' }}
+            >
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}><RotateCw size={13} /> Refresh</span>
+            </button>
+          </div>
+        </header>
+
+        {/* CONTAINER FOR METRICS AND TAB CONTENT */}
+        <div style={{ padding: '28px 32px', flex: 1 }}>
+          {/* Cross-Tenant Boundary Notice */}
+          {currentUser?.tenant?.slug && tenantSlug && currentUser.tenant.slug !== tenantSlug && (
+            <div
+              style={{
+                marginBottom: '24px',
+                padding: '14px 18px',
+                backgroundColor: '#FEF3C7',
+                border: '1px solid #FCD34D',
+                borderRadius: 'var(--radius-xs, 2px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <AlertCircle size={18} color="#D97706" style={{ flexShrink: 0 }} />
+                <div style={{ fontSize: '13px', color: '#78350F', lineHeight: '1.4' }}>
+                  <strong style={{ color: '#92400E' }}>Cross-Tenant Portal Notice:</strong> You are signed in as an administrator for <strong>{currentUser?.tenant?.name}</strong> (<code>/{currentUser?.tenant?.slug}</code>). You are currently viewing the workspace for <strong>{tenantSlug}</strong>.
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  onClick={() => navigate(`/${currentUser.tenant.slug}/admin`)}
+                  className="btn btn-primary"
+                  style={{ fontSize: '12px', padding: '6px 14px', whiteSpace: 'nowrap' }}
+                >
+                  Switch to My Business
+                </button>
+                <button
+                  onClick={handleLogout}
+                  className="btn btn-outline"
+                  style={{ fontSize: '12px', padding: '6px 14px', whiteSpace: 'nowrap' }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
+          {/* METRIC CARDS (Requirements 2, 3, 7) */}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+              gap: '16px',
+              marginBottom: '28px',
+            }}
+          >
+            {!isStaff ? (
+              <div className="metric-card">
+                <div className="metric-label">TOTAL CONFIRMED REVENUE</div>
+                <div className="metric-value">
+                  <span style={{ fontFamily: 'var(--font-serif)', fontWeight: 500, marginRight: '2px' }}>{"\u20B9"}</span>
+                  {((analytics?.totalRevenueCents || 0) / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                </div>
+                <span style={{ fontSize: '12px', color: '#10B981', fontWeight: '500' }}>
+                  +100% vs last week &bull; {analytics?.currency || 'INR'}
+                </span>
+              </div>
+            ) : (
+              <div className="metric-card" style={{ borderColor: 'var(--accent)' }}>
+                <div className="metric-label" style={{ color: 'var(--accent)' }}>STAFF ACCESS LEVEL</div>
+                <div className="metric-value" style={{ fontSize: '24px' }}>Front-Desk Mode</div>
+                <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  Check-ins & Daily Schedule View Only
+                </span>
+              </div>
+            )}
+
+            <div className="metric-card">
+              <div className="metric-label">TOTAL RESERVATIONS</div>
+              <div className="metric-value">{analytics?.totalBookings || 0}</div>
+              <span style={{ fontSize: '12px', color: '#10B981', fontWeight: '500' }}>
+                {analytics?.confirmedBookings || 0} confirmed &bull; {bookings.filter(b => b.status === 'CANCELLED').length} cancelled
+              </span>
+            </div>
+
+            <div className="metric-card">
+              <div className="metric-label">ACTIVE BOOKABLE RESOURCES</div>
+              <div className="metric-value">{resources.filter(r => r.isActive).length}</div>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                {resources.filter(r => r.isActive).length} active of {resources.length} total inventory
+              </span>
+            </div>
+          </div>
+
+          {/* TAB CONTENT */}
+{activeTab === 'bookings' && (
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '12px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -560,7 +952,21 @@ export default function AdminDashboardPage() {
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
                   className="input-field"
-                  style={{ width: '160px', padding: '6px 10px', fontSize: '13px' }}
+                  style={{
+                    width: '160px',
+                    padding: '7px 32px 7px 12px',
+                    fontSize: '13px',
+                    border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-xs, 2px)',
+                    backgroundColor: 'var(--bg-surface)',
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                    appearance: 'none',
+                    WebkitAppearance: 'none',
+                    backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'%23737373\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3E%3Cpolyline points=\'6 9 12 15 18 9\'%3E%3C/polyline%3E%3C/svg%3E")',
+                    backgroundRepeat: 'no-repeat',
+                    backgroundPosition: 'right 10px center'
+                  }}
                 >
                   <option value="">All Statuses</option>
                   <option value="CONFIRMED">Confirmed</option>
@@ -585,7 +991,7 @@ export default function AdminDashboardPage() {
                   <Download size={14} /> Export CSV
                 </button>
                 <button onClick={loadData} className="btn btn-ghost" style={{ fontSize: '12px' }}>
-                  ↻ Refresh
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}><RotateCw size={13} /> Refresh</span>
                 </button>
               </div>
             </div>
@@ -618,7 +1024,7 @@ export default function AdminDashboardPage() {
                             <div style={{ fontWeight: '500' }}>
                               {isBlocked ? (
                                 <span style={{ color: 'var(--error)', fontWeight: '600' }}>
-                                  🛡️ {b.customerName.replace('[BLOCKED]', '').trim()}
+                                   {b.customerName.replace('[BLOCKED]', '').trim()}
                                 </span>
                               ) : (
                                 b.customerName
@@ -640,17 +1046,40 @@ export default function AdminDashboardPage() {
                               </span>
                             )}
                           </td>
-                          <td className="mono" style={{ fontWeight: '700' }}>
-                            ₹{(b.totalAmountCents / 100).toFixed(2)}
+                          <td style={{ fontFamily: 'var(--font-serif)', fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            <span style={{ fontFamily: 'var(--font-serif)', fontWeight: 500, marginRight: '1px' }}>{"\u20B9"}</span>
+                            {(b.totalAmountCents / 100).toFixed(2)}
                           </td>
                           <td>
                             {b.status !== 'CANCELLED' && (
                               <button
                                 onClick={() => handleCancelBooking(b.id)}
-                                className="btn btn-ghost"
-                                style={{ color: 'var(--error)', fontSize: '12px', padding: '4px 8px' }}
+                                style={{
+                                  fontSize: '12px',
+                                  fontWeight: 500,
+                                  padding: '5px 12px',
+                                  borderRadius: 'var(--radius-xs, 2px)',
+                                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                                  backgroundColor: 'rgba(239, 68, 68, 0.04)',
+                                  color: '#EF4444',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.15s ease',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px'
+                                }}
+                                onMouseEnter={(e) => {
+                                  e.currentTarget.style.borderColor = '#EF4444';
+                                  e.currentTarget.style.color = '#FFFFFF';
+                                  e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.15)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.25)';
+                                  e.currentTarget.style.color = '#EF4444';
+                                  e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.04)';
+                                }}
                               >
-                                {isBlocked ? 'Unblock' : 'Cancel'}
+                                {isBlocked ? 'Unblock' : 'Cancel Booking'}
                               </button>
                             )}
                           </td>
@@ -710,12 +1139,13 @@ export default function AdminDashboardPage() {
                       {r.description || 'No description provided.'}
                     </p>
 
-                    <div className="mono" style={{ fontSize: '16px', fontWeight: '700', color: 'var(--accent)', marginBottom: '8px' }}>
-                      ₹{(r.hourlyRateCents / 100).toFixed(2)}/hr
+                    <div style={{ fontFamily: 'var(--font-serif)', fontSize: '18px', fontWeight: '600', color: 'var(--accent)', marginBottom: '8px' }}>
+                      <span style={{ fontFamily: 'var(--font-serif)', fontWeight: 500, marginRight: '1px' }}>{"\u20B9"}</span>
+                      {(r.hourlyRateCents / 100).toFixed(2)}<span style={{ fontSize: '13px', fontWeight: '400', fontFamily: 'var(--font-sans)', color: 'var(--text-secondary)' }}>/hr</span>
                     </div>
 
                     <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '6px' }}>
-                      Operating Hours: <strong className="mono">{r.openTime || '08:00'} – {r.closeTime || '20:00'}</strong> ({r.slotDurationMinutes || 60}m slots)
+                      Operating Hours: <strong className="mono">{r.openTime || '08:00'} - {r.closeTime || '20:00'}</strong> ({r.slotDurationMinutes || 60}m slots)
                     </div>
 
                     <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '20px' }}>
@@ -756,7 +1186,7 @@ export default function AdminDashboardPage() {
                   <XAxis dataKey="name" />
                   <YAxis allowDecimals={false} />
                   <Tooltip />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="count" fill="var(--accent)" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -782,12 +1212,7 @@ export default function AdminDashboardPage() {
               </button>
             </div>
 
-            <div style={{
-              backgroundColor: '#FFFFFF',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-xs)',
-              overflow: 'hidden',
-            }}>
+            <div className="admin-table-wrapper">
               <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                 <thead>
                   <tr style={{ backgroundColor: 'var(--bg-alt)', borderBottom: '1px solid var(--border)', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -934,15 +1359,20 @@ export default function AdminDashboardPage() {
             </form>
           </div>
         )}
+      
+        </div>
       </main>
+
+      {/* MODALS */}
+
 
       {/* MODAL: ADD RESOURCE */}
       {showAddResource && (
         <div style={{
           position: 'fixed',
           inset: 0,
-          backgroundColor: 'rgba(23, 23, 23, 0.4)',
-          backdropFilter: 'blur(3px)',
+          backgroundColor: 'rgba(23, 23, 23, 0.4)', backdropFilter: 'blur(3px)',
+          backdropFilter: 'blur(12px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -952,7 +1382,7 @@ export default function AdminDashboardPage() {
           <div style={{
             backgroundColor: '#FFFFFF',
             border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
+            borderRadius: 'var(--radius-md)',
             width: '100%',
             maxWidth: '540px',
             padding: '32px',
@@ -997,7 +1427,7 @@ export default function AdminDashboardPage() {
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
                 <div>
-                  <label className="input-label">Rate (₹ / hr) *</label>
+                  <label className="input-label">Rate ({"\u20B9"} / hr) *</label>
                   <input
                     type="number"
                     required
@@ -1133,8 +1563,8 @@ export default function AdminDashboardPage() {
         <div style={{
           position: 'fixed',
           inset: 0,
-          backgroundColor: 'rgba(23, 23, 23, 0.4)',
-          backdropFilter: 'blur(3px)',
+          backgroundColor: 'rgba(23, 23, 23, 0.4)', backdropFilter: 'blur(3px)',
+          backdropFilter: 'blur(12px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1144,7 +1574,7 @@ export default function AdminDashboardPage() {
           <div style={{
             backgroundColor: '#FFFFFF',
             border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
+            borderRadius: 'var(--radius-md)',
             width: '100%',
             maxWidth: '480px',
             padding: '32px',
@@ -1255,8 +1685,8 @@ export default function AdminDashboardPage() {
         <div style={{
           position: 'fixed',
           inset: 0,
-          backgroundColor: 'rgba(23, 23, 23, 0.4)',
-          backdropFilter: 'blur(3px)',
+          backgroundColor: 'rgba(23, 23, 23, 0.4)', backdropFilter: 'blur(3px)',
+          backdropFilter: 'blur(12px)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1266,7 +1696,7 @@ export default function AdminDashboardPage() {
           <div style={{
             backgroundColor: '#FFFFFF',
             border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-sm)',
+            borderRadius: 'var(--radius-md)',
             width: '100%',
             maxWidth: '480px',
             padding: '32px',
@@ -1317,7 +1747,7 @@ export default function AdminDashboardPage() {
                 <input
                   type="password"
                   required
-                  placeholder="••••••••"
+                  placeholder="Password"
                   value={invitePassword}
                   onChange={(e) => setInvitePassword(e.target.value)}
                   className="input-field"

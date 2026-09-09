@@ -98,7 +98,10 @@ router.post('/bookings/check-availability', async (req: Request, res: Response, 
     const bookedCount = await prisma.booking.count({
       where: {
         resourceId,
-        status: { in: ['PENDING', 'CONFIRMED'] },
+        OR: [
+        { status: 'CONFIRMED' },
+        { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
+      ],
         startTime: { lt: effectiveEndDt },
         endTime: { gt: effectiveStartDt },
       },
@@ -170,7 +173,10 @@ router.post('/slots/lock', async (req: Request, res: Response, next: NextFunctio
     const bookedCount = await prisma.booking.count({
       where: {
         resourceId,
-        status: { in: ['PENDING', 'CONFIRMED'] },
+        OR: [
+        { status: 'CONFIRMED' },
+        { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
+      ],
         startTime: { lt: slotEndDt },
         endTime: { gt: slotStartDt },
       },
@@ -299,7 +305,10 @@ router.post('/bookings', async (req: Request, res: Response, next: NextFunction)
     const bookedCount = await prisma.booking.count({
       where: {
         resourceId,
-        status: { in: ['PENDING', 'CONFIRMED'] },
+        OR: [
+        { status: 'CONFIRMED' },
+        { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
+      ],
         startTime: { lt: endDt },
         endTime: { gt: startDt },
       },
