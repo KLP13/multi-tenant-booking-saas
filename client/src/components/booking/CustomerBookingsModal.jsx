@@ -452,7 +452,7 @@ export default function CustomerBookingsModal({ tenantSlug, isOpen, onClose }) {
                     const isCancelled = b.status === 'CANCELLED';
                     const isPending = b.status === 'PENDING';
                     const isExpired = isPending && new Date(b.createdAt).getTime() <= Date.now() - 10 * 60 * 1000;
-                    const isPassed = isConfirmed && end < now;
+                    const isPassed = isConfirmed && new Date(b.endTime) < now;
 
                     const gcalUrl = isConfirmed ? generateGoogleCalendarUrl({
                       title: `${b.resource?.name || 'Booking'} at ${b.tenant?.name || 'Business'}`,
