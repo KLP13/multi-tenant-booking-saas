@@ -5,6 +5,7 @@ import TenantHeader from '../../components/layout/TenantHeader';
 import ResourceCard from '../../components/booking/ResourceCard';
 import SlotGrid from '../../components/booking/SlotGrid';
 import CheckoutDrawer from '../../components/booking/CheckoutDrawer';
+import BookingModal from '../../components/booking/BookingModal';
 import { Sparkles, Calendar, Clock, Shield, MapPin, ExternalLink } from 'lucide-react';
 
 export default function TenantBookingPage() {
