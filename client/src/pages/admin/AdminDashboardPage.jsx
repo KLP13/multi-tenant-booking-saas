@@ -802,44 +802,23 @@ export default function AdminDashboardPage() {
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {activeTab === 'bookings' && (
-              <>
-                <button
-                  onClick={() => setShowBlockModal(true)}
-                  className="btn btn-outline"
-                  style={{ fontSize: '12px', padding: '6px 12px', color: 'var(--accent)', borderColor: 'var(--accent)', backgroundColor: '#FFFFFF' }}
-                >
-                  <Ban size={13} /> Block Slot
-                </button>
-                <button
-                  onClick={handleExportCSV}
-                  className="btn btn-outline"
-                  style={{ fontSize: '12px', padding: '6px 12px', backgroundColor: '#FFFFFF' }}
-                >
-                  <Download size={13} /> Export CSV
-                </button>
-              </>
-            )}
-
-            {activeTab === 'resources' && (
-              <button
-                onClick={() => setShowAddResource(true)}
-                className="btn btn-primary"
-                style={{ fontSize: '12px', padding: '6px 12px' }}
-              >
-                <Plus size={13} /> Add Resource
-              </button>
-            )}
-
-            
-
-            <button
-              onClick={loadData}
-              className="btn btn-ghost"
-              style={{ fontSize: '12px', padding: '6px 10px', color: 'var(--text-secondary)' }}
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                fontSize: '11px',
+                fontWeight: '500',
+                color: '#16A34A',
+                padding: '4px 10px',
+                backgroundColor: 'rgba(22, 163, 74, 0.08)',
+                borderRadius: '12px',
+                border: '1px solid rgba(22, 163, 74, 0.2)',
+              }}
             >
-              <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}><RotateCw size={13} /> Refresh</span>
-            </button>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: '#16A34A', display: 'inline-block' }}></span>
+              Live Sync
+            </span>
           </div>
         </header>
 
@@ -1096,12 +1075,18 @@ export default function AdminDashboardPage() {
                 </p>
               </div>
 
-              <button
-                onClick={() => setShowAddResource(true)}
-                className="btn btn-primary"
-              >
-                <Plus size={16} /> Add New Resource
-              </button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  onClick={() => setShowAddResource(true)}
+                  className="btn btn-primary"
+                  style={{ fontSize: '13px' }}
+                >
+                  <Plus size={15} /> Add New Resource
+                </button>
+                <button onClick={loadData} className="btn btn-ghost" style={{ fontSize: '12px' }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}><RotateCw size={13} /> Refresh</span>
+                </button>
+              </div>
             </div>
 
             <div style={{
@@ -1195,13 +1180,18 @@ export default function AdminDashboardPage() {
                   Manage your front-desk staff and admin accounts. Front-desk staff have access to reservations and check-ins, while financial revenue metrics are protected.
                 </p>
               </div>
-              <button
-                onClick={() => setShowInviteModal(true)}
-                className="btn btn-primary"
-                style={{ fontSize: '13px' }}
-              >
-                <UserPlus size={15} /> Add Staff
-              </button>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  onClick={() => setShowInviteModal(true)}
+                  className="btn btn-primary"
+                  style={{ fontSize: '13px' }}
+                >
+                  <UserPlus size={15} /> Add Staff
+                </button>
+                <button onClick={loadData} className="btn btn-ghost" style={{ fontSize: '12px' }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}><RotateCw size={13} /> Refresh</span>
+                </button>
+              </div>
             </div>
 
             <div className="admin-table-wrapper">
