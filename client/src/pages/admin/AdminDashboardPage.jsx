@@ -831,15 +831,7 @@ export default function AdminDashboardPage() {
               </button>
             )}
 
-            {activeTab === 'team' && (
-              <button
-                onClick={() => setShowInviteModal(true)}
-                className="btn btn-primary"
-                style={{ fontSize: '12px', padding: '6px 12px' }}
-              >
-                <UserPlus size={13} /> Invite Member
-              </button>
-            )}
+            
 
             <button
               onClick={loadData}
@@ -1208,7 +1200,7 @@ export default function AdminDashboardPage() {
                 className="btn btn-primary"
                 style={{ fontSize: '13px' }}
               >
-                <UserPlus size={16} /> Add Team Member
+                <UserPlus size={15} /> Add Staff
               </button>
             </div>
 
@@ -1712,7 +1704,7 @@ export default function AdminDashboardPage() {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent)', marginBottom: '8px' }}>
               <UserPlus size={20} />
-              <h3 style={{ fontSize: '20px' }}>Add Team Member</h3>
+              <h3 style={{ fontSize: '20px' }}>Add Staff</h3>
             </div>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '24px' }}>
               Create an account for front-desk staff or an administrator.
