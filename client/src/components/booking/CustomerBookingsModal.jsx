@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '../../api/client';
 import { triggerGoogleOAuth } from '../../utils/googleAuth';
 import { generateGoogleCalendarUrl } from '../../utils/calendar';
+import { formatBookingSlotRange } from '../../utils/dateTime';
 import { 
   X, 
   Calendar, 
@@ -441,22 +442,17 @@ export default function CustomerBookingsModal({ tenantSlug, isOpen, onClose }) {
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                  {displayedBookings.map((b) => {
-                    const start = new Date(b.startTime);
-                    const end = new Date(b.endTime);
-                    const dateFormatted = start.toLocaleDateString('en-US', {
-                      weekday: 'short',
-                      month: 'short',
-                      day: 'numeric',
-                      year: 'numeric',
-                    });
-                    const timeRange = `${start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })} - ${end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+                                    {displayedBookings.map((b) => {
+                    const { dateFormatted, timeRange } = formatBookingSlotRange(b.startTime, b.endTime);
+                    const start24 = new Date(b.startTime).toLocaleTimeString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false });
+                    const end24 = new Date(b.endTime).toLocaleTimeString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false });
+                    const displayTime = `${timeRange} (${start24} - ${end24})`;
 
                     const isConfirmed = b.status === 'CONFIRMED';
                     const isCancelled = b.status === 'CANCELLED';
                     const isPending = b.status === 'PENDING';
                     const isExpired = isPending && new Date(b.createdAt).getTime() <= Date.now() - 10 * 60 * 1000;
-                    const isPassed = isConfirmed && end < now;
+                    const isPassed = isConfirmed && new Date(b.endTime) < now;
 
                     const gcalUrl = isConfirmed ? generateGoogleCalendarUrl({
                       title: `${b.resource?.name || 'Booking'} at ${b.tenant?.name || 'Business'}`,
@@ -589,7 +585,7 @@ export default function CustomerBookingsModal({ tenantSlug, isOpen, onClose }) {
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                             <Clock size={15} color="var(--accent)" />
-                            <span>{timeRange}</span>
+                            <span>{displayTime}</span>
                           </div>
                         </div>
 

@@ -160,7 +160,10 @@ router.get('/resources/:id/slots', async (req: Request, res: Response, next: Nex
       const existingBookings = await prisma.booking.findMany({
         where: {
           resourceId: id,
-          status: { in: ['PENDING', 'CONFIRMED'] },
+          OR: [
+            { status: 'CONFIRMED' },
+            { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
+          ],
           startTime: { lt: slotEndDt },
           endTime: { gt: slotStartDt },
         },

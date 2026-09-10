@@ -12,6 +12,7 @@ export default function TenantBookingPage() {
   const { tenant, resources, loading, error } = useTenant();
   const [selectedResource, setSelectedResource] = useState(null);
   const [checkoutSlot, setCheckoutSlot] = useState(null);
+  const [slotRefreshKey, setSlotRefreshKey] = useState(0);
 
   const lockState = useSlotLock();
 

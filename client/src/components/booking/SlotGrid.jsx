@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../api/client';
-import { Calendar as CalendarIcon, Clock, CheckCircle2, Lock } from 'lucide-react';
+import { Calendar as CalendarIcon, Clock, CheckCircle2, Lock, RotateCw } from 'lucide-react';
 
 const getLocalDateString = (d = new Date()) => {
   const year = d.getFullYear();
@@ -9,7 +9,7 @@ const getLocalDateString = (d = new Date()) => {
   return `${year}-${month}-${day}`;
 };
 
-export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
+export default function SlotGrid({ resource, onSelectSlot, selectedSlot, refreshTrigger }) {
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateString());
   const [slots, setSlots] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -49,7 +49,7 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
     if (resource?.id) {
       fetchSlots(selectedDate);
     }
-  }, [resource?.id, selectedDate]);
+  }, [resource?.id, selectedDate, refreshTrigger]);
 
   // Check if a slot is in the past relative to current local time
   const isSlotPast = (dateStr, startTimeStr) => {
@@ -111,9 +111,9 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
         <button
           onClick={() => fetchSlots(selectedDate)}
           className="btn btn-ghost"
-          style={{ fontSize: '12px' }}
+          style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
         >
-          ↻ Refresh
+          <RotateCw size={12} /> Refresh
         </button>
       </div>
 
@@ -195,9 +195,17 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
             ))}
           </div>
 
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)', display: 'flex', gap: '10px', alignItems: 'center' }}>
-            <span style={{ color: '#16A34A', fontWeight: '600' }}>? {availableSlotsCount} Open</span>
-            {heldSlotsCount > 0 && <span style={{ color: '#D97706', fontWeight: '600' }}>? {heldSlotsCount} In Checkout</span>}
+          <div style={{ fontSize: '12px', color: 'var(--text-secondary)', display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <span style={{ color: '#16A34A', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: '#16A34A', display: 'inline-block' }}></span>
+              {availableSlotsCount} Slots Available
+            </span>
+            {heldSlotsCount > 0 && (
+              <span style={{ color: '#D97706', fontWeight: '600', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: '#D97706', display: 'inline-block' }}></span>
+                {heldSlotsCount} In Checkout
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -340,7 +348,7 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot }) {
               color: 'var(--text-secondary)',
             }}>
               <span>
-                🕒 Showing upcoming slots ({upcomingSlots.length} available &bull; {pastSlots.length} earlier slots concluded)
+                Showing upcoming slots ({upcomingSlots.length} available &bull; {pastSlots.length} earlier slots concluded)
               </span>
               <button
                 type="button"
