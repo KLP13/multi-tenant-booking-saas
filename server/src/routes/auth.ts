@@ -1,10 +1,11 @@
+import { authenticate } from '../middleware/auth';
 import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { createError } from '../middleware/errorHandler';
 import { storeOtp, verifyOtp } from '../lib/redis';
-import { sendRegistrationOtp, sendWelcomeBusinessEmail } from '../lib/email';
+import { sendRegistrationOtp, sendWelcomeBusinessEmail, sendPasswordResetEmail } from '../lib/email';
 
 const router = Router();
 
@@ -285,7 +286,7 @@ router.post('/universal-login', async (req: Request, res: Response, next: NextFu
  */
 router.post('/google', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, name, businessName, slug, mode } = req.body;
+    const { email, name, businessName, slug } = req.body;
 
     if (!email) {
       throw createError(400, 'Google email is required');
@@ -308,7 +309,6 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
         throw createError(409, `The URL slug "${cleanSlug}" is already taken. Please choose another.`);
       }
 
-      // Generate random secure password hash for OAuth-created user
       const randomSecret = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
       const passwordHash = await bcrypt.hash(randomSecret, 10);
 
@@ -338,7 +338,6 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
         { expiresIn: '7d' }
       );
 
-      // Automatically email portal links to new Google partner
       sendWelcomeBusinessEmail(cleanEmail, businessName, cleanSlug).catch((err) => {
         console.error('Failed to send welcome email:', err);
       });
@@ -362,26 +361,14 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
       });
     }
 
-
-    // 2. If mode is explicitly 'register' and business details not provided yet:
-    // Always return isNewUser: true so frontend asks for business details!
-    if (mode === 'register') {
-      return res.json({
-        isNewUser: true,
-        email: cleanEmail,
-        name: name || '',
-        message: 'Please provide business name and URL slug to complete setup',
-      });
-    }
-
-    // 3. Login mode: Check if user already exists
+    // 2. Check if user already exists (whether on Login page or Register page)
     const existingUsers = await prisma.user.findMany({
       where: { email: cleanEmail },
       include: { tenant: true },
     });
 
     if (existingUsers.length > 0) {
-      // Existing user found! Log them in directly to their tenant
+      // Existing user found! Log them in directly to their existing business portal
       const user = existingUsers[0];
       const token = jwt.sign(
         { userId: user.id, tenantId: user.tenantId, role: user.role },
@@ -407,7 +394,7 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
       });
     }
 
-    // User is NEW on login -> Return isNewUser: true so frontend prompts them to set up their business
+    // 3. User does not exist -> Prompt them to complete their business details
     return res.json({
       isNewUser: true,
       email: cleanEmail,
@@ -418,5 +405,151 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
     next(err);
   }
 });
+
+
+/**
+ * POST /api/auth/forgot-password
+ * Initiates password reset by sending a 6-digit verification code to the user's email
+ */
+router.post('/forgot-password', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, tenantSlug } = req.body;
+
+    if (!email) {
+      throw createError(400, 'Email address is required');
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+
+    let user;
+    if (tenantSlug) {
+      const tenant = await prisma.tenant.findUnique({ where: { slug: tenantSlug } });
+      if (tenant) {
+        user = await prisma.user.findFirst({
+          where: { email: cleanEmail, tenantId: tenant.id },
+          include: { tenant: true },
+        });
+      }
+    }
+
+    if (!user) {
+      user = await prisma.user.findFirst({
+        where: { email: cleanEmail },
+        include: { tenant: true },
+      });
+    }
+
+    // Return positive confirmation to avoid leaking email enumeration
+    if (!user) {
+      return res.json({
+        success: true,
+        message: `If an account exists for ${cleanEmail}, a verification code has been sent.`,
+      });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Store in Redis / memory for 15 minutes (900 seconds)
+    await storeOtp(`reset:${cleanEmail}`, otp, 900);
+
+    // Send reset email via Resend
+    await sendPasswordResetEmail(cleanEmail, otp, user.tenant?.name || 'Bespoke Bookings');
+
+    return res.json({
+      success: true,
+      message: `A 6-digit password reset code was sent to ${cleanEmail}`,
+      devOtp: !process.env.SMTP_HOST && !process.env.RESEND_API_KEY ? otp : undefined,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/auth/reset-password
+ * Verifies the 6-digit code and updates the user's password
+ */
+router.post('/reset-password', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      throw createError(400, 'Email, verification code, and new password are required');
+    }
+
+    if (newPassword.length < 6) {
+      throw createError(400, 'New password must be at least 6 characters long');
+    }
+
+    const cleanEmail = email.toLowerCase().trim();
+
+    const isValid = await verifyOtp(`reset:${cleanEmail}`, otp);
+    if (!isValid) {
+      throw createError(400, 'Invalid or expired verification code');
+    }
+
+    const users = await prisma.user.findMany({
+      where: { email: cleanEmail },
+      include: { tenant: true },
+    });
+
+    if (users.length === 0) {
+      throw createError(404, 'User account not found');
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+    await prisma.user.updateMany({
+      where: { email: cleanEmail },
+      data: { passwordHash: hashedPassword },
+    });
+
+    return res.json({
+      success: true,
+      message: 'Password has been successfully updated. You can now log in.',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/auth/me
+ * Returns current authenticated user and tenant info
+ */
+router.get('/me', authenticate, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        tenant: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            currency: true,
+            address: true,
+            phone: true,
+            logoUrl: true,
+            cancellationPolicy: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw createError(404, 'User not found or session invalid');
+    }
+
+    res.json({ user, tenant: user.tenant });
+  } catch (err) {
+    next(err);
+  }
+});
+
 
 export default router;
