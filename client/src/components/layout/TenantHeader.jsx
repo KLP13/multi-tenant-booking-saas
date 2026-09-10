@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTenant } from '../../context/TenantContext';
-import { ShieldCheck, Compass, Ticket } from 'lucide-react';
+import { Compass, Ticket } from 'lucide-react';
 import CustomerBookingsModal from '../booking/CustomerBookingsModal';
 
 export default function TenantHeader() {
@@ -91,13 +91,7 @@ export default function TenantHeader() {
             )}
           </button>
 
-          <button
-            onClick={() => navigate(`/${tenantSlug}/admin`)}
-            className="btn btn-outline"
-            style={{ fontSize: '13px', padding: '8px 14px' }}
-          >
-            <ShieldCheck size={16} /> Business Portal
-          </button>
+          
         </nav>
       </div>
 

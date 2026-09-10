@@ -1,3 +1,4 @@
+import ForgotPasswordModal from '../components/auth/ForgotPasswordModal';
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
@@ -21,6 +22,7 @@ export default function TenantLoginPage() {
   const [newBusinessName, setNewBusinessName] = useState('');
   const [newSlug, setNewSlug] = useState('');
   const [copiedLink, setCopiedLink] = useState(false);
+  const [showForgotModal, setShowForgotModal] = useState(false);
 
   // Handle standard email/password login
   const handleEmailLogin = async (e) => {
@@ -253,7 +255,24 @@ export default function TenantLoginPage() {
               </div>
 
               <div style={{ marginBottom: '24px' }}>
-                <label className="input-label">Password</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label className="input-label" style={{ marginBottom: 0 }}>Password</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowForgotModal(true)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      color: 'var(--accent)',
+                      fontSize: '12px',
+                      fontWeight: '500',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Forgot password?
+                  </button>
+                </div>
                 <div style={{ position: 'relative' }}>
                   <input
                     type="password"
@@ -288,6 +307,12 @@ export default function TenantLoginPage() {
           </div>
         </div>
       </main>
+      <ForgotPasswordModal
+        isOpen={showForgotModal}
+        onClose={() => setShowForgotModal(false)}
+        initialEmail={email}
+        tenantSlug=""
+      />
 
       {/* MODAL: New Tenant Setup (Only triggers if Google account is not yet registered to any business) */}
       {showSetupModal && (
