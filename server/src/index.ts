@@ -1,7 +1,9 @@
+import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
 
 // Route imports
