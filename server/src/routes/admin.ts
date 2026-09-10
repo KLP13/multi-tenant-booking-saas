@@ -56,6 +56,38 @@ router.get('/me', async (req: Request, res: Response, next: NextFunction) => {
 // GET /api/admin/resources
 // List all resources for the authenticated tenant with filtering & pagination
 // -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
+// PUT /api/admin/profile
+// Update business settings, contact info, and cancellation policy (Admin only)
+// -----------------------------------------------------------------------------
+router.put('/profile', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { name, phone, address, logoUrl, cancellationPolicy, currency } = req.body;
+
+    const dataToUpdate: any = {};
+    if (name !== undefined) dataToUpdate.name = String(name).trim();
+    if (phone !== undefined) dataToUpdate.phone = String(phone).trim();
+    if (address !== undefined) dataToUpdate.address = String(address).trim();
+    if (logoUrl !== undefined) dataToUpdate.logoUrl = String(logoUrl).trim();
+    if (cancellationPolicy !== undefined) dataToUpdate.cancellationPolicy = String(cancellationPolicy).trim();
+    if (currency !== undefined) dataToUpdate.currency = String(currency).trim();
+
+    const updatedTenant = await prisma.tenant.update({
+      where: { id: req.user!.tenantId },
+      data: dataToUpdate,
+    });
+
+    res.json({
+      success: true,
+      tenant: updatedTenant,
+      message: 'Business settings updated successfully',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/resources', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { search, minCapacity, maxCapacity, isActive, page, limit, sortBy, sortOrder } = req.query;
