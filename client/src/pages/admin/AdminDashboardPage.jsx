@@ -20,6 +20,7 @@ import {
   ShieldAlert,
   Users,
   UserPlus,
+  Mail,
   Trash2,
   ShieldCheck,
   Image as ImageIcon,
@@ -72,6 +73,20 @@ export default function AdminDashboardPage() {
 
   // Slot blocking modal state
   const [showBlockModal, setShowBlockModal] = useState(false);
+  const [showWalkinModal, setShowWalkinModal] = useState(false);
+  const [walkinResourceId, setWalkinResourceId] = useState('');
+  const [walkinDate, setWalkinDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [walkinSlots, setWalkinSlots] = useState([]);
+  const [loadingWalkinSlots, setLoadingWalkinSlots] = useState(false);
+  const [walkinIsClosed, setWalkinIsClosed] = useState(false);
+  const [walkinClosedMsg, setWalkinClosedMsg] = useState('');
+  const [selectedWalkinSlot, setSelectedWalkinSlot] = useState(null);
+  const [walkinCustomerName, setWalkinCustomerName] = useState('');
+  const [walkinCustomerPhone, setWalkinCustomerPhone] = useState('');
+  const [walkinCustomerEmail, setWalkinCustomerEmail] = useState('');
+  const [walkinAmount, setWalkinAmount] = useState('');
+  const [submittingWalkin, setSubmittingWalkin] = useState(false);
+
   const [blockResourceId, setBlockResourceId] = useState('');
   const [blockDate, setBlockDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [blockStartTime, setBlockStartTime] = useState('10:00');
@@ -200,6 +215,19 @@ export default function AdminDashboardPage() {
     }
   };
 
+  const handleMarkPaid = async (id) => {
+    if (!window.confirm('Confirm offline / cash payment for this booking? The slot will be permanently marked CONFIRMED and the customer will receive an email confirmation.')) return;
+
+    try {
+      await api.post(`/admin/bookings/${id}/mark-paid`);
+      toast.success('Booking marked as PAID & CONFIRMED');
+      loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to mark booking as paid');
+    }
+  };
+
+
   const handleExportCSV = async () => {
     try {
       const res = await api.get('/admin/bookings/export', { responseType: 'blob' });
@@ -242,6 +270,86 @@ export default function AdminDashboardPage() {
       toast.error(err.response?.data?.error || 'Failed to create resource');
     } finally {
       setCreatingResource(false);
+    }
+  };
+
+  
+
+  const isSlotInPast = (dateStr, startTimeStr) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const [h, min] = startTimeStr.split(':').map(Number);
+    const slotDateTime = new Date(y, m - 1, d, h, min, 0);
+    return slotDateTime <= new Date();
+  };
+
+  const fetchWalkinSlots = async (resourceId, date) => {
+    if (!resourceId || !date) return;
+    setLoadingWalkinSlots(true);
+    setSelectedWalkinSlot(null);
+    try {
+      const res = await api.get(`/resources/${resourceId}/slots?date=${date}`);
+      setWalkinIsClosed(res.data.isClosed || false);
+      setWalkinClosedMsg(res.data.message || '');
+      setWalkinSlots(res.data.slots || []);
+    } catch (err) {
+      console.error('Failed to load slots for walkin:', err);
+      setWalkinSlots([]);
+      setWalkinIsClosed(false);
+    } finally {
+      setLoadingWalkinSlots(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showWalkinModal && walkinResourceId && walkinDate) {
+      fetchWalkinSlots(walkinResourceId, walkinDate);
+    }
+  }, [showWalkinModal, walkinResourceId, walkinDate]);
+
+  const handleWalkinBooking = async (e) => {
+    e.preventDefault();
+    const resId = walkinResourceId || (resources.find(r => r.isActive)?.id || resources[0]?.id);
+    if (!resId) {
+      toast.error('Please select an active resource');
+      return;
+    }
+    if (!selectedWalkinSlot) {
+      toast.error('Please select an available upcoming time slot');
+      return;
+    }
+    if (!walkinCustomerName.trim()) {
+      toast.error('Please enter customer name');
+      return;
+    }
+
+    try {
+      setSubmittingWalkin(true);
+      const selectedRes = resources.find(r => r.id === resId);
+      const rateCents = walkinAmount !== '' ? Math.round(parseFloat(walkinAmount) * 100) : (selectedRes?.hourlyRateCents || 0);
+
+      const res = await api.post('/admin/bookings/walk-in', {
+        resourceId: resId,
+        date: walkinDate,
+        startTime: selectedWalkinSlot.startTime,
+        endTime: selectedWalkinSlot.endTime,
+        customerName: walkinCustomerName.trim(),
+        customerPhone: walkinCustomerPhone.trim(),
+        customerEmail: walkinCustomerEmail.trim(),
+        amountPaidCents: rateCents,
+      });
+
+      toast.success(res.data?.message || 'Walk-in cash booking confirmed successfully!');
+      setShowWalkinModal(false);
+      setSelectedWalkinSlot(null);
+      setWalkinCustomerName('');
+      setWalkinCustomerPhone('');
+      setWalkinCustomerEmail('');
+      setWalkinAmount('');
+      loadData();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to create walk-in booking');
+    } finally {
+      setSubmittingWalkin(false);
     }
   };
 
@@ -297,14 +405,17 @@ export default function AdminDashboardPage() {
     e.preventDefault();
     try {
       setInviting(true);
-      await api.post('/admin/team', {
+      const res = await api.post('/admin/team', {
         name: inviteName,
         email: inviteEmail,
-        password: invitePassword,
         role: inviteRole,
       });
 
-      toast.success(`Team member ${inviteEmail} added successfully!`);
+      if (res.data?.inviteSent) {
+        toast.success(`Invitation dispatched to ${inviteEmail}! Secure setup link emailed.`);
+      } else {
+        toast.success(`Team member ${inviteEmail} added successfully!`);
+      }
       setShowInviteModal(false);
       setInviteName('');
       setInviteEmail('');
@@ -315,6 +426,15 @@ export default function AdminDashboardPage() {
       toast.error(err.response?.data?.error || 'Failed to add team member');
     } finally {
       setInviting(false);
+    }
+  };
+
+  const handleResendInvite = async (id, email) => {
+    try {
+      const res = await api.post(`/admin/team/${id}/resend-invite`);
+      toast.success(res.data?.message || `Invitation link resent to ${email}`);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to resend invitation');
     }
   };
 
@@ -948,6 +1068,25 @@ export default function AdminDashboardPage() {
 
               <div style={{ display: 'flex', gap: '8px' }}>
                 <button
+                  onClick={() => {
+                    const firstActive = resources.find(r => r.isActive)?.id || resources[0]?.id || '';
+                    setWalkinResourceId(firstActive);
+                    setShowWalkinModal(true);
+                  }}
+                  className="btn btn-primary"
+                  style={{
+                    fontSize: '13px',
+                    backgroundColor: '#059669',
+                    color: '#FFFFFF',
+                    border: 'none',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                >
+                  <Plus size={14} /> Walk-in Booking (Cash)
+                </button>
+                <button
                   onClick={() => setShowBlockModal(true)}
                   className="btn btn-outline"
                   style={{ fontSize: '13px', color: 'var(--accent)', borderColor: 'var(--accent)' }}
@@ -992,16 +1131,38 @@ export default function AdminDashboardPage() {
                       return (
                         <tr key={b.id}>
                           <td>
-                            <div style={{ fontWeight: '500' }}>
+                            <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
                               {isBlocked ? (
-                                <span style={{ color: 'var(--error)', fontWeight: '600' }}>
-                                   {b.customerName.replace('[BLOCKED]', '').trim()}
+                                <span style={{ color: 'var(--error)', fontWeight: 600 }}>
+                                    {b.customerName.replace('[BLOCKED]', '').trim()}
                                 </span>
                               ) : (
                                 b.customerName
                               )}
                             </div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>{b.customerEmail}</div>
+                            {b.user || b.razorpayPaymentId?.startsWith('cash_counter_') || b.customerEmail?.includes('@counter.internal') ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px', flexWrap: 'wrap' }}>
+                                <span style={{
+                                  fontSize: '11px',
+                                  fontWeight: 600,
+                                  padding: '1px 7px',
+                                  borderRadius: '3px',
+                                  backgroundColor: 'rgba(5, 150, 105, 0.1)',
+                                  color: '#059669',
+                                }}>
+                                  Walk-in &bull; Logged by {b.user?.name || b.user?.email || 'Staff'}
+                                </span>
+                                {b.customerEmail && !b.customerEmail.includes('@counter.internal') && b.customerEmail !== b.user?.email && (
+                                  <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                                    {b.customerEmail}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                                {b.customerEmail}
+                              </div>
+                            )}
                           </td>
                           <td>{b.resource?.name || 'Resource'}</td>
                           <td className="mono" style={{ fontSize: '13px' }}>
@@ -1022,7 +1183,40 @@ export default function AdminDashboardPage() {
                             {(b.totalAmountCents / 100).toFixed(2)}
                           </td>
                           <td>
-                            {b.status !== 'CANCELLED' && (
+                            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                              {b.status === 'PENDING' && !isBlocked && (
+                                <button
+                                  onClick={() => handleMarkPaid(b.id)}
+                                  style={{
+                                    fontSize: '12px',
+                                    fontWeight: 500,
+                                    padding: '5px 12px',
+                                    borderRadius: 'var(--radius-xs, 2px)',
+                                    border: '1px solid rgba(16, 185, 129, 0.35)',
+                                    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+                                    color: '#059669',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s ease',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '5px'
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.borderColor = '#059669';
+                                    e.currentTarget.style.color = '#FFFFFF';
+                                    e.currentTarget.style.backgroundColor = '#059669';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.35)';
+                                    e.currentTarget.style.color = '#059669';
+                                    e.currentTarget.style.backgroundColor = 'rgba(16, 185, 129, 0.08)';
+                                  }}
+                                >
+                                  <CheckCircle size={12} />
+                                  Mark Paid (Cash)
+                                </button>
+                              )}
+                              {b.status !== 'CANCELLED' && (
                               <button
                                 onClick={() => handleCancelBooking(b.id)}
                                 style={{
@@ -1053,6 +1247,7 @@ export default function AdminDashboardPage() {
                                 {isBlocked ? 'Unblock' : 'Cancel Booking'}
                               </button>
                             )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1226,14 +1421,24 @@ export default function AdminDashboardPage() {
                         </td>
                         <td style={{ padding: '14px 16px', textAlign: 'right' }}>
                           {!isSelf && (
-                            <button
-                              onClick={() => handleRemoveMember(member.id, member.email)}
-                              className="btn btn-outline"
-                              style={{ padding: '6px 10px', fontSize: '12px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.3)' }}
-                              title="Remove Team Member"
-                            >
-                              <Trash2 size={13} />
-                            </button>
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                              <button
+                                onClick={() => handleResendInvite(member.id, member.email)}
+                                className="btn btn-outline"
+                                style={{ padding: '6px 10px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                                title="Resend 24h Setup Link"
+                              >
+                                <Mail size={13} /> Resend Invite
+                              </button>
+                              <button
+                                onClick={() => handleRemoveMember(member.id, member.email)}
+                                className="btn btn-outline"
+                                style={{ padding: '6px 10px', fontSize: '12px', color: 'var(--error)', borderColor: 'rgba(239, 68, 68, 0.3)' }}
+                                title="Remove Team Member"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -1662,6 +1867,291 @@ export default function AdminDashboardPage() {
         </div>
       )}
 
+      
+      {/* MODAL: WALK-IN / CASH BOOKING */}
+      {showWalkinModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(23, 23, 23, 0.4)',
+          backdropFilter: 'blur(12px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 100,
+          padding: '20px',
+        }}>
+          <div style={{
+            backgroundColor: '#FFFFFF',
+            border: '1px solid var(--border)',
+            borderRadius: 'var(--radius-md)',
+            width: '100%',
+            maxWidth: '560px',
+            padding: '28px',
+            boxShadow: '0 20px 40px rgba(0, 0, 0, 0.1)',
+            position: 'relative',
+            maxHeight: '92vh',
+            overflowY: 'auto',
+          }}>
+            <button
+              onClick={() => setShowWalkinModal(false)}
+              style={{ position: 'absolute', top: '20px', right: '20px', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              <X size={20} />
+            </button>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#059669', marginBottom: '6px' }}>
+              <CheckCircle size={22} />
+              <h3 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', margin: 0 }}>Walk-in Cash Booking</h3>
+            </div>
+            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '18px' }}>
+              Select a live upcoming available slot, enter customer details, and collect cash. Logged under <strong>{currentUser?.name || currentUser?.email}</strong>.
+            </p>
+
+            <form onSubmit={handleWalkinBooking}>
+              {/* Resource Selection */}
+              <div style={{ marginBottom: '14px' }}>
+                <label className="input-label">Select Resource *</label>
+                <select
+                  value={walkinResourceId}
+                  onChange={(e) => {
+                    setWalkinResourceId(e.target.value);
+                    const selected = resources.find(r => r.id === e.target.value);
+                    if (selected) {
+                      setWalkinAmount((selected.hourlyRateCents / 100).toFixed(2));
+                    }
+                  }}
+                  className="input-field"
+                  required
+                >
+                  {resources.filter(r => r.isActive).map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} &mdash; {"\u20B9"}{(r.hourlyRateCents / 100).toFixed(2)} / slot
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Date Quick Tabs */}
+              <div style={{ marginBottom: '14px' }}>
+                <label className="input-label">Booking Date *</label>
+                <div style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '4px' }}>
+                  {Array.from({ length: 5 }, (_, i) => {
+                    const d = new Date();
+                    d.setDate(d.getDate() + i);
+                    const ds = d.toISOString().split('T')[0];
+                    const label = i === 0 ? 'Today' : i === 1 ? 'Tomorrow' : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+                    const isSel = walkinDate === ds;
+                    return (
+                      <button
+                        key={ds}
+                        type="button"
+                        onClick={() => setWalkinDate(ds)}
+                        style={{
+                          padding: '6px 12px',
+                          borderRadius: '4px',
+                          fontSize: '12px',
+                          fontWeight: 500,
+                          border: isSel ? '1px solid #059669' : '1px solid var(--border)',
+                          backgroundColor: isSel ? 'rgba(5, 150, 105, 0.1)' : 'var(--bg)',
+                          color: isSel ? '#059669' : 'var(--text-primary)',
+                          cursor: 'pointer',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Live Slot Availability Grid */}
+              <div style={{ marginBottom: '18px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <label className="input-label" style={{ margin: 0 }}>Available Slots *</label>
+                  <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                    {walkinSlots.filter(s => s.status === 'available' && !isSlotInPast(walkinDate, s.startTime)).length} available
+                  </span>
+                </div>
+
+                {walkinIsClosed ? (
+                  <div style={{ padding: '16px', backgroundColor: 'var(--bg-alt)', borderRadius: '4px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                    Resource is closed on this date ({walkinClosedMsg})
+                  </div>
+                ) : loadingWalkinSlots ? (
+                  <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                    Checking real-time slot availability...
+                  </div>
+                ) : walkinSlots.length === 0 ? (
+                  <div style={{ padding: '16px', backgroundColor: 'var(--bg-alt)', borderRadius: '4px', color: 'var(--text-secondary)', fontSize: '13px' }}>
+                    No slots available for this date.
+                  </div>
+                ) : (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+                    gap: '8px',
+                    maxHeight: '170px',
+                    overflowY: 'auto',
+                    padding: '6px',
+                    border: '1px solid var(--border)',
+                    borderRadius: '4px',
+                    backgroundColor: 'var(--bg)',
+                  }}>
+                    {walkinSlots.map((slot) => {
+                      const isPast = isSlotInPast(walkinDate, slot.startTime);
+                      const isAvailable = slot.status === 'available' && !isPast;
+                      const isSelected = selectedWalkinSlot?.startTime === slot.startTime;
+
+                      let statusBadge = 'Available';
+                      if (isPast) statusBadge = 'Past';
+                      else if (slot.status === 'booked') statusBadge = 'Booked';
+                      else if (slot.status === 'blocked') statusBadge = 'Blocked';
+                      else if (slot.status === 'locked') statusBadge = 'Held';
+
+                      return (
+                        <button
+                          key={slot.startTime}
+                          type="button"
+                          disabled={!isAvailable}
+                          onClick={() => setSelectedWalkinSlot(slot)}
+                          style={{
+                            padding: '8px 6px',
+                            borderRadius: '4px',
+                            border: isSelected
+                              ? '2px solid #059669'
+                              : isAvailable
+                              ? '1px solid rgba(5, 150, 105, 0.4)'
+                              : '1px solid var(--border)',
+                            backgroundColor: isSelected
+                              ? '#059669'
+                              : isAvailable
+                              ? '#FFFFFF'
+                              : 'rgba(0,0,0,0.04)',
+                            color: isSelected
+                              ? '#FFFFFF'
+                              : isAvailable
+                              ? 'var(--text-primary)'
+                              : 'var(--text-muted)',
+                            cursor: isAvailable ? 'pointer' : 'not-allowed',
+                            textAlign: 'center',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '2px',
+                            opacity: isAvailable ? 1 : 0.55,
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          <span style={{ fontSize: '12px', fontWeight: 600 }}>
+                            {slot.startTime} &ndash; {slot.endTime}
+                          </span>
+                          <span style={{
+                            fontSize: '10px',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em',
+                            fontWeight: 600,
+                            color: isSelected ? '#FFFFFF' : isAvailable ? '#059669' : 'var(--text-muted)',
+                          }}>
+                            {isSelected ? 'SELECTED' : statusBadge}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Customer Inputs */}
+              <div style={{ marginBottom: '14px' }}>
+                <label className="input-label">Customer Name *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Ramesh Kumar"
+                  value={walkinCustomerName}
+                  onChange={(e) => setWalkinCustomerName(e.target.value)}
+                  className="input-field"
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+                <div>
+                  <label className="input-label">Customer Phone (Optional)</label>
+                  <input
+                    type="tel"
+                    placeholder="e.g. 9876543210"
+                    value={walkinCustomerPhone}
+                    onChange={(e) => setWalkinCustomerPhone(e.target.value)}
+                    className="input-field"
+                  />
+                </div>
+                <div>
+                  <label className="input-label">Customer Email (Optional)</label>
+                  <input
+                    type="email"
+                    placeholder="For instant email receipt"
+                    value={walkinCustomerEmail}
+                    onChange={(e) => setWalkinCustomerEmail(e.target.value)}
+                    className="input-field"
+                  />
+                </div>
+              </div>
+
+              {/* Cash Collection & Staff Attribution */}
+              <div style={{
+                backgroundColor: 'rgba(5, 150, 105, 0.05)',
+                border: '1px solid rgba(5, 150, 105, 0.2)',
+                borderRadius: '6px',
+                padding: '12px 16px',
+                marginBottom: '20px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '8px',
+              }}>
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Staff Audit Attribution
+                  </div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                    Logged by {currentUser?.name || currentUser?.email} ({currentUser?.role})
+                  </div>
+                </div>
+
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Cash to Collect
+                  </div>
+                  <div style={{ fontSize: '16px', fontWeight: 700, color: '#059669', fontFamily: 'var(--font-serif)' }}>
+                    {"\u20B9"}{walkinAmount || '0.00'}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowWalkinModal(false)}
+                  className="btn btn-outline"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  style={{ backgroundColor: '#059669', borderColor: '#059669' }}
+                  disabled={submittingWalkin || !selectedWalkinSlot}
+                >
+                  {submittingWalkin ? 'Confirming...' : 'Confirm & Collect Cash'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      
       {/* MODAL: INVITE TEAM MEMBER */}
       {showInviteModal && (
         <div style={{
@@ -1724,16 +2214,21 @@ export default function AdminDashboardPage() {
                 />
               </div>
 
-              <div style={{ marginBottom: '16px' }}>
-                <label className="input-label">Temporary Password *</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="Password"
-                  value={invitePassword}
-                  onChange={(e) => setInvitePassword(e.target.value)}
-                  className="input-field"
-                />
+              <div style={{
+                padding: '12px 14px',
+                backgroundColor: 'rgba(37, 99, 235, 0.05)',
+                border: '1px solid rgba(37, 99, 235, 0.18)',
+                borderRadius: 'var(--radius-xs)',
+                marginBottom: '16px',
+                display: 'flex',
+                gap: '10px',
+                alignItems: 'flex-start'
+              }}>
+                <Mail size={16} color="var(--accent)" style={{ marginTop: '2px', flexShrink: 0 }} />
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                  <strong style={{ color: 'var(--text-primary)', display: 'block', marginBottom: '2px' }}>Email Activation Link</strong>
+                  A secure 24-hour setup link will be emailed to the staff member so they can safely choose their own password.
+                </div>
               </div>
 
               <div style={{ marginBottom: '24px' }}>
@@ -1763,7 +2258,7 @@ export default function AdminDashboardPage() {
                   style={{ flex: 1 }}
                   disabled={inviting}
                 >
-                  {inviting ? 'Adding Member...' : 'Create Account'}
+                  {inviting ? 'Sending Invite...' : 'Send Setup Invite'}
                 </button>
               </div>
             </form>

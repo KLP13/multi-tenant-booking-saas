@@ -9,6 +9,8 @@ import TenantLoginPage from './pages/TenantLoginPage';
 import TenantBookingPage from './pages/customer/TenantBookingPage';
 import AdminLoginPage from './pages/admin/AdminLoginPage';
 import AdminDashboardPage from './pages/admin/AdminDashboardPage';
+import SuperadminDashboardPage from './pages/admin/SuperadminDashboardPage';
+import StaffPasswordSetupPage from './pages/staff/StaffPasswordSetupPage';
 
 export default function App() {
   return (
@@ -20,11 +22,17 @@ export default function App() {
         {/* Platform Home */}
         <Route path="/" element={<LandingPage />} />
 
+                {/* Global Superadmin Platform Console */}
+        <Route path="/superadmin" element={<SuperadminDashboardPage />} />
+
         {/* Business Self-Registration */}
         <Route path="/register" element={<RegisterTenantPage />} />
 
         {/* Platform Universal Sign-In */}
         <Route path="/login" element={<TenantLoginPage />} />
+
+                {/* Staff Invitation Password Setup */}
+        <Route path="/:tenantSlug/staff/setup" element={<StaffPasswordSetupPage />} />
 
         {/* Tenant Admin Login */}
         <Route path="/:tenantSlug/admin/login" element={<AdminLoginPage />} />
