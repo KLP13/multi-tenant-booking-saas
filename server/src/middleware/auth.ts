@@ -1,3 +1,4 @@
+import { config } from '../config/env';
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
@@ -31,7 +32,7 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET as string) as JwtPayload;
+    const decoded = jwt.verify(token, config.jwt.secret) as JwtPayload;
     req.user = decoded;
     next();
   } catch {

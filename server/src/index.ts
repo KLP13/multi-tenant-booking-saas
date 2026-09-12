@@ -2,6 +2,9 @@ import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { config } from './config/env';
+import { logger } from './lib/logger';
+import { requestIdMiddleware } from './middleware/requestId';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
@@ -22,12 +25,16 @@ import './lib/prisma';   // initializes Prisma client
 import './lib/redis';    // initializes Redis client / fallback
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = config.port;
 
 // ─── Middleware ────────────────────────────────────────────────────────────
 
+// 1. Request correlation ID & request latency logging (must be very first)
+app.use(requestIdMiddleware);
+
+// 2. CORS
 app.use(cors({
-  origin: process.env.CLIENT_URL ?? 'http://localhost:3000',
+  origin: config.clientUrl,
   credentials: true,
 }));
 
@@ -65,5 +72,5 @@ app.use(errorHandler);
 // ─── Start Server ─────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  logger.info({ port: PORT, env: config.nodeEnv }, `🚀 Server running on http://localhost:${PORT}`);
 });

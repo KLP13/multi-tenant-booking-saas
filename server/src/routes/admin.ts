@@ -1,10 +1,23 @@
+import { validateRequest } from '../middleware/validate';
+import {
+  createResourceSchema,
+  updateResourceSchema,
+  adminWalkInSchema,
+  markPaidSchema,
+  inviteStaffSchema,
+  adminBookingsQuerySchema,
+  blockSlotSchema,
+  idParamSchema,
+} from '../schemas';
+import { confirmBookingWithConflictCheck } from '../services/bookingConfirmation';
+import crypto from 'crypto';
 import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
 import { prisma } from '../lib/prisma';
 import { authenticate, requireRole } from '../middleware/auth';
 import { createError } from '../middleware/errorHandler';
-import { releaseLock } from '../lib/redis';
-import { sendBookingCancellationEmail } from '../lib/email';
+import { releaseLock, storeOtp } from '../lib/redis';
+import { sendBookingCancellationEmail, sendBookingConfirmationEmail, sendStaffInviteEmail } from '../lib/email';
 
 const router = Router();
 
@@ -148,7 +161,7 @@ router.get('/resources', async (req: Request, res: Response, next: NextFunction)
 // GET /api/admin/resources/:id
 // Get single resource with booking metrics
 // -----------------------------------------------------------------------------
-router.get('/resources/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/resources/:id', validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
     const resource = await prisma.resource.findFirst({
@@ -191,7 +204,7 @@ router.get('/resources/:id', async (req: Request, res: Response, next: NextFunct
 // POST /api/admin/resources
 // Create a new resource with strict capacity and schedule validation
 // -----------------------------------------------------------------------------
-router.post('/resources', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/resources', requireRole('ADMIN', 'SUPER_ADMIN'), validateRequest(createResourceSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       name,
@@ -265,7 +278,7 @@ router.post('/resources', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Reque
 // PUT /api/admin/resources/:id
 // Update a resource with capacity validation
 // -----------------------------------------------------------------------------
-router.put('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+router.put('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), validateRequest(updateResourceSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
     const {
@@ -395,7 +408,7 @@ router.put('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Re
 // DELETE /api/admin/resources/:id
 // Soft delete (deactivate) a resource
 // ─────────────────────────────────────────────────────────────────────────────
-router.delete('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
 
@@ -422,7 +435,7 @@ router.delete('/resources/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req:
 // POST /api/admin/slots/block
 // Administrative slot hold for maintenance or private booking
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/slots/block', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/slots/block', validateRequest(blockSlotSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { resourceId, date, startTime, endTime, reason } = req.body;
 
@@ -460,7 +473,7 @@ router.post('/slots/block', async (req: Request, res: Response, next: NextFuncti
 // GET /api/admin/bookings
 // List bookings for the tenant with optional filters
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/bookings', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/bookings', validateRequest(adminBookingsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { resourceId, status, date } = req.query;
 
@@ -500,7 +513,7 @@ router.get('/bookings', async (req: Request, res: Response, next: NextFunction) 
 // GET /api/admin/bookings/export
 // Download all bookings as CSV for accounting and taxation
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/bookings/export', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/bookings/export', validateRequest(adminBookingsQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const bookings = await prisma.booking.findMany({
       where: { tenantId: req.user!.tenantId },
@@ -535,7 +548,7 @@ router.get('/bookings/export', async (req: Request, res: Response, next: NextFun
 // PUT /api/admin/bookings/:id/cancel
 // Cancel a booking
 // ─────────────────────────────────────────────────────────────────────────────
-router.put('/bookings/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
+router.put('/bookings/:id/cancel', validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
 
@@ -575,6 +588,172 @@ router.put('/bookings/:id/cancel', async (req: Request, res: Response, next: Nex
     }
 
     res.json({ success: true, booking: updated });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/bookings/walk-in
+// In-person / Counter Staff Walk-in Booking with Cash Payment
+// Accessible by: STAFF, ADMIN, SUPER_ADMIN
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/bookings/walk-in
+// In-person / Counter Staff Walk-in Booking with Cash Payment
+// Accessible by: STAFF, ADMIN, SUPER_ADMIN
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/bookings/walk-in', requireRole('STAFF', 'ADMIN', 'SUPER_ADMIN'), validateRequest(adminWalkInSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const {
+      resourceId,
+      date,
+      startTime,
+      endTime,
+      customerName,
+      customerPhone,
+      customerEmail,
+      amountPaidCents,
+    } = req.body;
+
+    if (!resourceId || !date || !startTime || !endTime || !customerName) {
+      throw createError(400, 'resourceId, date, startTime, endTime, and customerName are required');
+    }
+
+    const tenantId = req.user!.tenantId;
+
+    // Fetch staff / admin creator details
+    const staffUser = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { id: true, name: true, email: true, role: true },
+    });
+
+    if (!staffUser) {
+      throw createError(401, 'Staff session invalid');
+    }
+
+    // Verify resource belongs to this tenant and is active
+    const resource = await prisma.resource.findFirst({
+      where: { id: resourceId, tenantId, isActive: true },
+      include: { tenant: true },
+    });
+
+    if (!resource) {
+      throw createError(404, 'Resource not found or inactive');
+    }
+
+    const startDt = new Date(`${date}T${startTime}:00.000Z`);
+    const endDt = new Date(`${date}T${endTime}:00.000Z`);
+
+    if (isNaN(startDt.getTime()) || isNaN(endDt.getTime()) || startDt >= endDt) {
+      throw createError(400, 'Invalid start or end time specified');
+    }
+
+    // Strict validation: Reject past time slots
+    if (startDt <= new Date()) {
+      throw createError(400, 'Cannot book a time slot in the past. Please select an upcoming available slot.');
+    }
+
+    // Check for conflicting confirmed bookings or locks
+    const conflict = await prisma.booking.findFirst({
+      where: {
+        resourceId,
+        status: 'CONFIRMED',
+        startTime: { lt: endDt },
+        endTime: { gt: startDt },
+      },
+    });
+
+    if (conflict) {
+      throw createError(409, 'This slot is already booked and confirmed.');
+    }
+
+    const totalAmount =
+      amountPaidCents !== undefined && amountPaidCents !== null
+        ? Number(amountPaidCents)
+        : resource.hourlyRateCents;
+
+    const emailToRecord =
+      customerEmail && customerEmail.trim()
+        ? customerEmail.trim().toLowerCase()
+        : staffUser.email;
+
+    const fullName = customerName.trim() + (customerPhone ? ` (${customerPhone.trim()})` : '');
+
+    const booking = await prisma.booking.create({
+      data: {
+        tenantId,
+        resourceId,
+        userId: staffUser.id,
+        customerName: fullName,
+        customerEmail: emailToRecord,
+        startTime: startDt,
+        endTime: endDt,
+        status: 'CONFIRMED',
+        totalAmountCents: totalAmount,
+        razorpayPaymentId: `cash_counter_${Date.now()}`,
+        lockExpiresAt: null,
+      },
+      include: {
+        resource: true,
+        tenant: true,
+        user: { select: { id: true, name: true, email: true, role: true } },
+      },
+    });
+
+    // Release any pending Redis hold lock on this slot
+    const timeStr = startTime.slice(0, 5);
+    await releaseLock(resourceId, date, timeStr, booking.id);
+
+    // If customer provided a distinct genuine email, dispatch confirmation email
+    if (customerEmail && customerEmail.trim().toLowerCase() !== staffUser.email.toLowerCase()) {
+      sendBookingConfirmationEmail({
+        booking,
+        resource: booking.resource,
+        tenant: booking.tenant,
+      }).catch((err) => console.error('Failed to dispatch walk-in confirmation email:', err));
+    }
+
+    res.status(201).json({
+      success: true,
+      booking,
+      message: `Walk-in cash booking confirmed by ${staffUser.name || staffUser.email}`,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/admin/bookings/:id/mark-paid
+// Mark an offline / cash payment as received and confirm the booking
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/bookings/:id/mark-paid', requireRole('STAFF', 'ADMIN', 'SUPER_ADMIN'), validateRequest(markPaidSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = req.params.id as string;
+
+    const existing = await prisma.booking.findFirst({
+      where: { id, tenantId: req.user!.tenantId },
+    });
+
+    if (!existing) {
+      throw createError(404, 'Booking not found');
+    }
+
+    const { booking, alreadyConfirmed } = await confirmBookingWithConflictCheck({
+      bookingId: id,
+      paymentMethod: 'CASH',
+      razorpayPaymentId: `cash_manual_${Date.now()}`,
+    });
+
+    res.json({
+      success: true,
+      message: alreadyConfirmed ? 'Booking was already confirmed' : 'Booking marked as paid and confirmed successfully',
+      booking,
+    });
   } catch (err) {
     next(err);
   }
@@ -648,37 +827,57 @@ router.get('/team', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, re
 });
 
 // POST /api/admin/team — Invite / create a team member with STAFF or ADMIN role
-router.post('/team', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/team', requireRole('ADMIN', 'SUPER_ADMIN'), validateRequest(inviteStaffSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, email, password, role = 'STAFF' } = req.body;
 
-    if (!email || !password) {
-      throw createError(400, 'Email and password are required');
+    if (!email) {
+      throw createError(400, 'Email is required');
     }
 
     if (!['STAFF', 'ADMIN'].includes(role)) {
       throw createError(400, 'Role must be either STAFF or ADMIN');
     }
 
+    const cleanEmail = email.toLowerCase().trim();
+
     const existing = await prisma.user.findUnique({
       where: {
         tenantId_email: {
           tenantId: req.user!.tenantId,
-          email: email.toLowerCase().trim(),
+          email: cleanEmail,
         },
       },
     });
 
     if (existing) {
-      throw createError(409, 'A team member with this email already exists');
+      throw createError(409, 'A team member with this email already exists in your workspace');
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const [tenant, inviter] = await Promise.all([
+      prisma.tenant.findUnique({ where: { id: req.user!.tenantId } }),
+      prisma.user.findUnique({ where: { id: req.user!.userId }, select: { name: true } }),
+    ]);
+
+    if (!tenant) {
+      throw createError(404, 'Tenant not found');
+    }
+
+    let passwordHash: string;
+    let inviteToken: string | null = null;
+
+    if (password && password.trim().length >= 6) {
+      passwordHash = await bcrypt.hash(password.trim(), 10);
+    } else {
+      const randomSecret = crypto.randomBytes(32).toString('hex');
+      passwordHash = await bcrypt.hash(randomSecret, 10);
+      inviteToken = crypto.randomBytes(32).toString('hex');
+    }
 
     const member = await prisma.user.create({
       data: {
         tenantId: req.user!.tenantId,
-        email: email.toLowerCase().trim(),
+        email: cleanEmail,
         passwordHash,
         name: name || '',
         role: role as any,
@@ -692,14 +891,93 @@ router.post('/team', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, r
       },
     });
 
-    res.status(201).json({ member });
+    if (inviteToken) {
+      const tokenPayload = JSON.stringify({
+        userId: member.id,
+        email: cleanEmail,
+        tenantId: tenant.id,
+        tenantSlug: tenant.slug,
+        role,
+      });
+      await storeOtp(`staff_invite:${inviteToken}`, tokenPayload, 86400);
+
+      const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+      const setupUrl = `${clientUrl}/${tenant.slug}/staff/setup?token=${inviteToken}`;
+
+      sendStaffInviteEmail({
+        email: cleanEmail,
+        staffName: name || 'Team Member',
+        businessName: tenant.name,
+        inviterName: inviter?.name || 'Your Team Administrator',
+        role,
+        setupUrl,
+      }).catch((err) => console.error('Failed to send staff invite email:', err));
+    }
+
+    res.status(201).json({
+      success: true,
+      member,
+      inviteSent: !!inviteToken,
+      message: inviteToken
+        ? `Invitation email sent to ${cleanEmail}`
+        : 'Team member created successfully',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/admin/team/:id/resend-invite — Resend invitation email
+router.post('/team/:id/resend-invite', requireRole('ADMIN', 'SUPER_ADMIN'), validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = req.params.id as string;
+    const member = await prisma.user.findFirst({
+      where: { id, tenantId: req.user!.tenantId },
+      include: { tenant: true },
+    });
+
+    if (!member) {
+      throw createError(404, 'Team member not found');
+    }
+
+    const inviter = await prisma.user.findUnique({
+      where: { id: req.user!.userId },
+      select: { name: true },
+    });
+
+    const inviteToken = crypto.randomBytes(32).toString('hex');
+    const tokenPayload = JSON.stringify({
+      userId: member.id,
+      email: member.email,
+      tenantId: member.tenantId,
+      tenantSlug: member.tenant.slug,
+      role: member.role,
+    });
+    await storeOtp(`staff_invite:${inviteToken}`, tokenPayload, 86400);
+
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+    const setupUrl = `${clientUrl}/${member.tenant.slug}/staff/setup?token=${inviteToken}`;
+
+    await sendStaffInviteEmail({
+      email: member.email,
+      staffName: member.name || 'Team Member',
+      businessName: member.tenant.name,
+      inviterName: inviter?.name || 'Your Team Administrator',
+      role: member.role,
+      setupUrl,
+    });
+
+    res.json({
+      success: true,
+      message: `Invitation email resent to ${member.email}`,
+    });
   } catch (err) {
     next(err);
   }
 });
 
 // DELETE /api/admin/team/:id — Remove a team member
-router.delete('/team/:id', requireRole('ADMIN', 'SUPER_ADMIN'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/team/:id', requireRole('ADMIN', 'SUPER_ADMIN'), validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
 

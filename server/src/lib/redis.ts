@@ -1,3 +1,4 @@
+import { logger } from './logger';
 import Redis from 'ioredis';
 
 const redisUrl = process.env.REDIS_URL;
@@ -19,22 +20,22 @@ try {
       lazyConnect: true,
     });
     redisClient.connect().catch(() => {
-      console.warn('[Redis] Local Redis not running, using in-memory distributed locks fallback.');
+      logger.warn('[Redis] Local Redis not running, using in-memory distributed locks fallback.');
     });
   }
 
   redisClient.on('connect', () => {
     isRedisConnected = true;
-    console.log('[Redis] Connected to Upstash Redis successfully.');
+    logger.info('[Redis] Connected to Upstash Redis successfully.');
   });
 
   redisClient.on('error', (err) => {
     if (isRedisConnected) {
-      console.error('[Redis] Connection error:', err.message);
+      logger.error({ err }, '[Redis] Connection error: ' + err.message);
     }
   });
 } catch (err) {
-  console.error('[Redis] Initialization error:', err);
+  logger.error({ err }, '[Redis] Initialization error');
 }
 
 export const redis = redisClient;
@@ -297,5 +298,35 @@ export async function verifyOtp(email: string, candidateOtp: string): Promise<bo
     return true;
   }
   return false;
+  
 }
 
+
+export async function getOtpValue(keyName: string): Promise<string | null> {
+  const key = `otp:${keyName.toLowerCase().trim()}`;
+  if (redis && isRedisConnected) {
+    try {
+      return await redis.get(key);
+    } catch {
+      // Fallback to memory
+    }
+  }
+  const stored = memoryOtps.get(key);
+  if (stored && stored.expiresAt > Date.now()) {
+    return stored.otp;
+  }
+  return null;
+}
+
+export async function deleteOtpValue(keyName: string): Promise<void> {
+  const key = `otp:${keyName.toLowerCase().trim()}`;
+  if (redis && isRedisConnected) {
+    try {
+      await redis.del(key);
+      return;
+    } catch {
+      // Fallback to memory
+    }
+  }
+  memoryOtps.delete(key);
+}

@@ -1,10 +1,23 @@
+import { validateRequest } from '../middleware/validate';
+import {
+  sendRegistrationOtpSchema,
+  registerTenantSchema,
+  universalLoginSchema,
+  googleAuthSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
+  staffInviteInfoQuerySchema,
+  staffSetPasswordSchema,
+} from '../schemas';
+import { config } from '../config/env';
 import { authenticate } from '../middleware/auth';
 import { Router, Request, Response, NextFunction } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { prisma } from '../lib/prisma';
 import { createError } from '../middleware/errorHandler';
-import { storeOtp, verifyOtp } from '../lib/redis';
+import { storeOtp, verifyOtp, getOtpValue, deleteOtpValue } from '../lib/redis';
 import { sendRegistrationOtp, sendWelcomeBusinessEmail, sendPasswordResetEmail } from '../lib/email';
 
 const router = Router();
@@ -13,7 +26,7 @@ const router = Router();
  * POST /api/auth/send-registration-otp
  * Generates and sends a 6-digit OTP to verify manual tenant registration
  */
-router.post('/send-registration-otp', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/send-registration-otp', validateRequest(sendRegistrationOtpSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, businessName, slug } = req.body;
 
@@ -28,6 +41,20 @@ router.post('/send-registration-otp', async (req: Request, res: Response, next: 
       throw createError(400, 'Slug must be at least 3 characters long');
     }
 
+    // Check if an account already exists with this email
+    const existingUser = await prisma.user.findFirst({
+      where: { email: cleanEmail },
+      include: { tenant: true },
+    });
+
+    if (existingUser) {
+      return res.json({
+        alreadyRegistered: true,
+        message: 'This email is already registered to a workspace. Please log in instead.',
+        tenantSlug: existingUser.tenant?.slug,
+      });
+    }
+
     // Check if slug is already taken before sending OTP
     const existing = await prisma.tenant.findUnique({
       where: { slug: cleanSlug },
@@ -37,8 +64,8 @@ router.post('/send-registration-otp', async (req: Request, res: Response, next: 
       throw createError(409, `The URL slug "${cleanSlug}" is already taken. Please choose another.`);
     }
 
-    // Generate 6-digit code
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate cryptographically secure 6-digit code
+    const otp = crypto.randomInt(100000, 1000000).toString();
 
     // Store in Redis (expires in 10 minutes)
     await storeOtp(cleanEmail, otp, 600);
@@ -49,7 +76,7 @@ router.post('/send-registration-otp', async (req: Request, res: Response, next: 
     res.json({
       success: true,
       message: `A 6-digit verification code was sent to ${cleanEmail}`,
-      devOtp: !process.env.SMTP_HOST ? otp : undefined,
+      ...(config.security.exposeDevOtp ? { devOtp: otp } : {}),
     });
   } catch (err) {
     next(err);
@@ -62,12 +89,20 @@ router.post('/send-registration-otp', async (req: Request, res: Response, next: 
  * Body: { businessName, slug, currency, adminName, email, password, otp }
  * Returns: { token, tenant, user }
  */
-router.post('/register-tenant', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/register-tenant', validateRequest(registerTenantSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { businessName, slug, currency = 'INR', adminName, email, password, otp } = req.body;
+    const { businessName, slug, currency = 'INR', adminName, email, password, confirmPassword, otp } = req.body;
 
     if (!businessName || !slug || !email || !password) {
       throw createError(400, 'businessName, slug, email, and password are required');
+    }
+
+    if (!confirmPassword) {
+      throw createError(400, 'Please confirm your password');
+    }
+
+    if (password !== confirmPassword) {
+      throw createError(400, 'Passwords do not match');
     }
 
     if (!otp) {
@@ -124,7 +159,7 @@ router.post('/register-tenant', async (req: Request, res: Response, next: NextFu
     // Issue JWT token immediately
     const token = jwt.sign(
       { userId: user.id, tenantId: tenant.id, role: user.role },
-      process.env.JWT_SECRET as string,
+      config.jwt.secret,
       { expiresIn: '7d' }
     );
 
@@ -195,7 +230,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     // Issue JWT
     const token = jwt.sign(
       { userId: user.id, tenantId: user.tenantId, role: user.role },
-      process.env.JWT_SECRET as string,
+      config.jwt.secret,
       { expiresIn: '7d' }
     );
 
@@ -219,7 +254,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
  * Body: { email, password }
  * Returns: { token, tenant: { id, name, slug }, user: { id, name, email, role } }
  */
-router.post('/universal-login', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/universal-login', validateRequest(universalLoginSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, password } = req.body;
 
@@ -255,7 +290,7 @@ router.post('/universal-login', async (req: Request, res: Response, next: NextFu
 
     const token = jwt.sign(
       { userId: matchedUser.id, tenantId: matchedUser.tenantId, role: matchedUser.role },
-      process.env.JWT_SECRET as string,
+      config.jwt.secret,
       { expiresIn: '7d' }
     );
 
@@ -284,7 +319,7 @@ router.post('/universal-login', async (req: Request, res: Response, next: NextFu
  * Universal Google OAuth endpoint for both login and new tenant onboarding
  * Body: { email, name, businessName?, slug? }
  */
-router.post('/google', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/google', validateRequest(googleAuthSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, name, businessName, slug } = req.body;
 
@@ -309,7 +344,7 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
         throw createError(409, `The URL slug "${cleanSlug}" is already taken. Please choose another.`);
       }
 
-      const randomSecret = Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+      const randomSecret = crypto.randomBytes(32).toString('hex');
       const passwordHash = await bcrypt.hash(randomSecret, 10);
 
       const tenant = await prisma.tenant.create({
@@ -334,7 +369,7 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
       const newUser = tenant.users[0];
       const token = jwt.sign(
         { userId: newUser.id, tenantId: tenant.id, role: newUser.role },
-        process.env.JWT_SECRET as string,
+        config.jwt.secret,
         { expiresIn: '7d' }
       );
 
@@ -372,7 +407,7 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
       const user = existingUsers[0];
       const token = jwt.sign(
         { userId: user.id, tenantId: user.tenantId, role: user.role },
-        process.env.JWT_SECRET as string,
+        config.jwt.secret,
         { expiresIn: '7d' }
       );
 
@@ -411,7 +446,7 @@ router.post('/google', async (req: Request, res: Response, next: NextFunction) =
  * POST /api/auth/forgot-password
  * Initiates password reset by sending a 6-digit verification code to the user's email
  */
-router.post('/forgot-password', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/forgot-password', validateRequest(forgotPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, tenantSlug } = req.body;
 
@@ -447,7 +482,8 @@ router.post('/forgot-password', async (req: Request, res: Response, next: NextFu
       });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate cryptographically secure 6-digit code
+    const otp = crypto.randomInt(100000, 1000000).toString();
 
     // Store in Redis / memory for 15 minutes (900 seconds)
     await storeOtp(`reset:${cleanEmail}`, otp, 900);
@@ -458,7 +494,7 @@ router.post('/forgot-password', async (req: Request, res: Response, next: NextFu
     return res.json({
       success: true,
       message: `A 6-digit password reset code was sent to ${cleanEmail}`,
-      devOtp: !process.env.SMTP_HOST && !process.env.RESEND_API_KEY ? otp : undefined,
+      ...(config.security.exposeDevOtp ? { devOtp: otp } : {}),
     });
   } catch (err) {
     next(err);
@@ -469,7 +505,7 @@ router.post('/forgot-password', async (req: Request, res: Response, next: NextFu
  * POST /api/auth/reset-password
  * Verifies the 6-digit code and updates the user's password
  */
-router.post('/reset-password', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/reset-password', validateRequest(resetPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, otp, newPassword } = req.body;
 
@@ -546,6 +582,120 @@ router.get('/me', authenticate, async (req: Request, res: Response, next: NextFu
     }
 
     res.json({ user, tenant: user.tenant });
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+/**
+ * GET /api/auth/staff/invite-info?token=...
+ * Validates setup token and returns staff & tenant info
+ */
+router.get('/staff/invite-info', validateRequest(staffInviteInfoQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const token = req.query.token as string;
+    if (!token) {
+      throw createError(400, 'Invitation token is required');
+    }
+
+    const rawData = await getOtpValue(`staff_invite:${token}`);
+    if (!rawData) {
+      throw createError(400, 'This invitation link is invalid or has expired. Please ask your administrator to resend the invite.');
+    }
+
+    const payload = JSON.parse(rawData);
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      include: { tenant: true },
+    });
+
+    if (!user) {
+      throw createError(404, 'Invited user account not found');
+    }
+
+    res.json({
+      valid: true,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      tenantName: user.tenant.name,
+      tenantSlug: user.tenant.slug,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/auth/staff/set-password
+ * Allows invited staff member to set their password and log in
+ */
+router.post('/staff/set-password', validateRequest(staffSetPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token, password, confirmPassword } = req.body;
+
+    if (!token || !password) {
+      throw createError(400, 'Token and password are required');
+    }
+
+    if (password.length < 6) {
+      throw createError(400, 'Password must be at least 6 characters long');
+    }
+
+    if (confirmPassword && password !== confirmPassword) {
+      throw createError(400, 'Passwords do not match');
+    }
+
+    const rawData = await getOtpValue(`staff_invite:${token}`);
+    if (!rawData) {
+      throw createError(400, 'This invitation link is invalid or has expired. Please ask your administrator to resend the invite.');
+    }
+
+    const payload = JSON.parse(rawData);
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      include: { tenant: true },
+    });
+
+    if (!user) {
+      throw createError(404, 'Invited user account not found');
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash },
+      include: { tenant: true },
+    });
+
+    // Delete token once consumed
+    await deleteOtpValue(`staff_invite:${token}`);
+
+    const authToken = jwt.sign(
+      { userId: updatedUser.id, tenantId: updatedUser.tenantId, role: updatedUser.role },
+      config.jwt.secret,
+      { expiresIn: '7d' }
+    );
+
+    res.json({
+      success: true,
+      message: 'Password successfully set! Welcome to your workspace.',
+      token: authToken,
+      user: {
+        id: updatedUser.id,
+        name: updatedUser.name,
+        email: updatedUser.email,
+        role: updatedUser.role,
+      },
+      tenant: {
+        id: updatedUser.tenant.id,
+        name: updatedUser.tenant.name,
+        slug: updatedUser.tenant.slug,
+      },
+    });
   } catch (err) {
     next(err);
   }
