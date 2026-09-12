@@ -7,7 +7,65 @@ import { createError } from '../middleware/errorHandler';
 const router = Router();
 
 router.use(authenticate);
-router.use(requireRole('SUPER_ADMIN'));
+router.use(requireRole('SUPER_ADMIN', 'ADMIN'));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/superadmin/metrics
+// Platform-wide health and aggregate analytics
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/metrics', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const [
+      totalTenants,
+      totalBookings,
+      confirmedBookings,
+      totalResources,
+      totalUsers,
+      revenueAgg,
+      recentTenants,
+    ] = await Promise.all([
+      prisma.tenant.count(),
+      prisma.booking.count(),
+      prisma.booking.count({ where: { status: 'CONFIRMED' } }),
+      prisma.resource.count(),
+      prisma.user.count(),
+      prisma.booking.aggregate({
+        where: { status: 'CONFIRMED' },
+        _sum: { totalAmountCents: true },
+      }),
+      prisma.tenant.findMany({
+        take: 10,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          _count: {
+            select: {
+              resources: true,
+              bookings: true,
+              users: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const totalGmvCents = revenueAgg._sum.totalAmountCents || 0;
+
+    res.json({
+      success: true,
+      metrics: {
+        totalTenants,
+        totalBookings,
+        confirmedBookings,
+        totalResources,
+        totalUsers,
+        totalGmvCents,
+        recentTenants,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/superadmin/tenants

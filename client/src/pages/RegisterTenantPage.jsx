@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { triggerGoogleOAuth } from '../utils/googleAuth';
-import { Building2, Sparkles, ArrowRight, ShieldCheck, Check, Globe, Copy, Mail, ArrowLeft, RefreshCw } from 'lucide-react';
+import { Building2, Sparkles, ArrowRight, ShieldCheck, Check, Globe, Copy, Mail, ArrowLeft, RefreshCw, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import confetti from 'canvas-confetti';
 
@@ -15,6 +15,8 @@ export default function RegisterTenantPage() {
   const [adminName, setAdminName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [isGoogleVerified, setIsGoogleVerified] = useState(false);
@@ -30,13 +32,28 @@ export default function RegisterTenantPage() {
       setLoading(true);
       const profile = await triggerGoogleOAuth();
 
-      // Pre-fill fields from verified Google profile
+      // Check if user already exists across tenants
+      const checkRes = await api.post('/auth/google', {
+        email: profile.email,
+        name: profile.name,
+      });
+
+      if (!checkRes.data.isNewUser) {
+        // User already has an existing workspace -> Auto log in directly!
+        localStorage.setItem('saas_auth_token', checkRes.data.token);
+        localStorage.setItem('saas_auth_user', JSON.stringify(checkRes.data.user));
+        toast.success(`Welcome back! Logging you into ${checkRes.data.tenant.name}...`);
+        navigate(`/${checkRes.data.tenant.slug}/admin`);
+        return;
+      }
+
+      // Fresh user -> Pre-fill fields from verified Google profile
       setEmail(profile.email);
       setAdminName(profile.name);
       setPassword('');
       setIsGoogleVerified(true);
       setStep('form');
-      toast.success(`Google verified (${profile.email})! Please enter your business name above.`);
+      toast.success(`Google verified (${profile.email})! Please enter your business name above to complete setup.`);
     } catch (err) {
       if (err.message && !err.message.includes('popup_closed_by_user')) {
         toast.error(err.message || 'Google verification failed');
@@ -79,9 +96,19 @@ export default function RegisterTenantPage() {
       return;
     }
 
-    if (!isGoogleVerified && (!password || password.length < 6)) {
-      toast.error('Please choose a password with at least 6 characters');
-      return;
+    if (!isGoogleVerified) {
+      if (!password || password.length < 6) {
+        toast.error('Please choose a password with at least 6 characters');
+        return;
+      }
+      if (!confirmPassword) {
+        toast.error('Please confirm your password');
+        return;
+      }
+      if (password !== confirmPassword) {
+        toast.error('Passwords do not match');
+        return;
+      }
     }
 
     // Google registration needs no manual OTP (Google already verified the email)
@@ -122,6 +149,14 @@ export default function RegisterTenantPage() {
         businessName,
         slug,
       });
+
+      if (res.data?.alreadyRegistered) {
+        toast.info(res.data.message || 'This email is already registered. Redirecting to login...');
+        setTimeout(() => {
+          navigate(res.data.tenantSlug ? `/${res.data.tenantSlug}/admin/login` : '/login');
+        }, 1500);
+        return;
+      }
 
       if (res.data.devOtp) {
         setDevOtp(res.data.devOtp);
@@ -173,6 +208,7 @@ export default function RegisterTenantPage() {
         adminName,
         email,
         password,
+        confirmPassword,
         otp: otp.trim(),
       });
 
@@ -540,15 +576,116 @@ export default function RegisterTenantPage() {
 
                   {!isGoogleVerified ? (
                     <div>
-                      <label className="input-label">Password *</label>
-                      <input
-                        type="password"
-                        required
-                        placeholder="At least 6 characters"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="input-field"
-                      />
+                      {/* Password Field */}
+                      <div style={{ marginBottom: '16px' }}>
+                        <label className="input-label">Password *</label>
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            placeholder="At least 6 characters"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            className="input-field"
+                            style={{ width: '100%', paddingRight: '42px' }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            tabIndex={-1}
+                            style={{
+                              position: 'absolute',
+                              right: '12px',
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: 'var(--text-secondary)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: 0,
+                            }}
+                            title={showPassword ? 'Hide password' : 'Show password'}
+                          >
+                            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Confirm Password Field */}
+                      <div style={{ marginBottom: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                          <label className="input-label" style={{ marginBottom: 0 }}>Confirm Password *</label>
+                          {confirmPassword && password && (
+                            <span style={{
+                              fontSize: '11px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              fontWeight: 600,
+                              color: password === confirmPassword ? '#059669' : '#DC2626'
+                            }}>
+                              {password === confirmPassword ? (
+                                <><Check size={12} /> Passwords match</>
+                              ) : (
+                                <><AlertCircle size={12} /> Does not match</>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            required
+                            placeholder="Re-enter your password"
+                            value={confirmPassword}
+                            onChange={(e) => setConfirmPassword(e.target.value)}
+                            className="input-field"
+                            style={{
+                              width: '100%',
+                              paddingRight: '42px',
+                              borderColor: confirmPassword && password
+                                ? (password === confirmPassword ? '#10B981' : '#EF4444')
+                                : undefined
+                            }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            tabIndex={-1}
+                            style={{
+                              position: 'absolute',
+                              right: '12px',
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: 'var(--text-secondary)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              padding: 0,
+                            }}
+                            title={showPassword ? 'Hide password' : 'Show password'}
+                          >
+                            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Checkbox for Show Password */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', userSelect: 'none' }}>
+                        <input
+                          type="checkbox"
+                          id="show-password-checkbox"
+                          checked={showPassword}
+                          onChange={(e) => setShowPassword(e.target.checked)}
+                          style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: 'var(--accent)' }}
+                        />
+                        <label
+                          htmlFor="show-password-checkbox"
+                          style={{ fontSize: '13px', color: 'var(--text-secondary)', cursor: 'pointer' }}
+                        >
+                          Show password
+                        </label>
+                      </div>
                     </div>
                   ) : (
                     <div style={{

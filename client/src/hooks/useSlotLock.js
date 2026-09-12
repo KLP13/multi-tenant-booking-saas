@@ -12,7 +12,7 @@ export function useSlotLock() {
   const getSessionToken = useCallback(() => {
     let token = sessionStorage.getItem('booking_lock_session');
     if (!token) {
-      token = 'sess_' + Math.random().toString(36).substring(2, 12) + '_' + Date.now();
+      token = 'sess_' + (typeof window !== 'undefined' && window.crypto?.randomUUID ? window.crypto.randomUUID() : Date.now().toString(36));
       sessionStorage.setItem('booking_lock_session', token);
     }
     return token;
