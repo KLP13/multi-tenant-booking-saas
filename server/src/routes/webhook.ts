@@ -1,14 +1,17 @@
+import { logger } from '../lib/logger';
 import { Router, Request, Response } from 'express';
 import { stripe } from '../lib/stripe';
 import { prisma } from '../lib/prisma';
 import { releaseLock } from '../lib/redis';
-import { sendBookingConfirmationEmail, sendBookingCancellationEmail } from '../lib/email';
+import { sendBookingCancellationEmail } from '../lib/email';
+import { confirmBookingWithConflictCheck } from '../services/bookingConfirmation';
+import { config } from '../config/env';
 
 const router = Router();
 
 router.post('/', async (req: Request, res: Response) => {
   const sig = req.headers['stripe-signature'] as string;
-  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const webhookSecret = config.payments.stripe.webhookSecret;
 
   let event: any;
 
@@ -22,12 +25,12 @@ router.post('/', async (req: Request, res: Response) => {
         : req.body;
     }
   } catch (err: any) {
-    console.error('[Stripe Webhook] Signature verification failed:', err.message);
+    logger.error({ err }, '[Stripe Webhook] Signature verification failed: ' + err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
   const eventType = event.type;
-  console.log(`[Stripe Webhook] Processing event: ${eventType}`);
+  logger.info({ eventType }, `[Stripe Webhook] Processing event: ${eventType}`);
 
   try {
     switch (eventType) {
@@ -36,52 +39,25 @@ router.post('/', async (req: Request, res: Response) => {
         const bookingId = paymentIntent.metadata?.bookingId;
 
         if (!bookingId) {
-          console.warn('[Stripe Webhook] payment_intent.succeeded received without bookingId metadata');
+          logger.warn('[Stripe Webhook] payment_intent.succeeded received without bookingId metadata');
           break;
         }
 
-        const existing = await prisma.booking.findUnique({
-          where: { id: bookingId },
-          include: { resource: true, tenant: true },
-        });
-
-        if (!existing) {
-          console.error(`[Stripe Webhook] Booking not found for id: ${bookingId}`);
-          break;
-        }
-
-        // Idempotency check: if already confirmed, skip redundant updates
-        if (existing.status === 'CONFIRMED') {
-          console.log(`[Stripe Webhook] Booking ${bookingId} already confirmed, skipping redundant processing.`);
-          break;
-        }
-
-        const updated = await prisma.booking.update({
-          where: { id: bookingId },
-          data: {
-            status: 'CONFIRMED',
+        try {
+          const result = await confirmBookingWithConflictCheck({
+            bookingId,
+            paymentMethod: 'STRIPE',
             stripePaymentIntentId: paymentIntent.id,
-            lockExpiresAt: null,
-          },
-          include: {
-            resource: true,
-            tenant: true,
-          },
-        });
+          });
 
-        // Release slot lock from Redis
-        const dateStr = updated.startTime.toISOString().split('T')[0];
-        const timeStr = updated.startTime.toISOString().split('T')[1].slice(0, 5);
-        await releaseLock(updated.resourceId, dateStr, timeStr, bookingId);
-
-        // Send confirmation email
-        sendBookingConfirmationEmail({
-          booking: updated,
-          resource: updated.resource,
-          tenant: updated.tenant,
-        }).catch((err) => console.error('[Stripe Webhook] Failed to send confirmation email:', err));
-
-        console.log(`[Stripe Webhook] Booking ${bookingId} successfully confirmed via payment_intent.succeeded.`);
+          if (result.alreadyConfirmed) {
+            logger.info({ bookingId }, `[Stripe Webhook] Booking ${bookingId} already confirmed, skipping duplicate.`);
+          } else {
+            logger.info({ bookingId }, `[Stripe Webhook] Booking ${bookingId} successfully confirmed.`);
+          }
+        } catch (err: any) {
+          logger.error({ bookingId, err }, `[Stripe Webhook] Capacity conflict or error confirming booking ${bookingId}: ` + err.message);
+        }
         break;
       }
 
@@ -119,19 +95,19 @@ router.post('/', async (req: Request, res: Response) => {
           booking: updated,
           resource: updated.resource,
           tenant: updated.tenant,
-        }).catch((err) => console.error('[Stripe Webhook] Failed to send cancellation email:', err));
+        }).catch((err) => logger.error({ err }, '[Stripe Webhook] Failed to send cancellation email'));
 
-        console.log(`[Stripe Webhook] Booking ${bookingId} status updated to CANCELLED.`);
+        logger.info({ bookingId }, `[Stripe Webhook] Booking ${bookingId} status updated to CANCELLED.`);
         break;
       }
 
       default:
-        console.log(`[Stripe Webhook] Unhandled event type: ${eventType}`);
+        logger.debug({ eventType }, `[Stripe Webhook] Unhandled event type: ${eventType}`);
     }
 
     return res.json({ received: true });
   } catch (err: any) {
-    console.error('[Stripe Webhook] Execution error handling event:', err);
+    logger.error({ err }, '[Stripe Webhook] Execution error handling event');
     return res.status(500).json({ error: 'Webhook processing error' });
   }
 });

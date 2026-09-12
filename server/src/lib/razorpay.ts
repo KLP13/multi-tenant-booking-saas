@@ -1,10 +1,11 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
+import { config } from '../config/env';
 
-export const razorpay: any = process.env.RAZORPAY_KEY_ID
+export const razorpay: any = config.payments.razorpay.isConfigured
   ? new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET || '',
+      key_id: config.payments.razorpay.keyId!,
+      key_secret: config.payments.razorpay.keySecret!,
     })
   : null;
 
@@ -16,7 +17,7 @@ export function verifyRazorpaySignature(params: {
   paymentId: string;
   signature: string;
 }): boolean {
-  const secret = process.env.RAZORPAY_KEY_SECRET || '';
+  const secret = config.payments.razorpay.keySecret;
   if (!secret) return false;
 
   const generatedSignature = crypto

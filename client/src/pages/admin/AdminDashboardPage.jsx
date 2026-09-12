@@ -1071,6 +1071,10 @@ export default function AdminDashboardPage() {
                   onClick={() => {
                     const firstActive = resources.find(r => r.isActive)?.id || resources[0]?.id || '';
                     setWalkinResourceId(firstActive);
+                    const sel = resources.find(r => r.id === firstActive);
+                    if (sel) {
+                      setWalkinAmount((sel.hourlyRateCents / 100).toFixed(2));
+                    }
                     setShowWalkinModal(true);
                   }}
                   className="btn btn-primary"
@@ -1915,8 +1919,9 @@ export default function AdminDashboardPage() {
                 <select
                   value={walkinResourceId}
                   onChange={(e) => {
-                    setWalkinResourceId(e.target.value);
-                    const selected = resources.find(r => r.id === e.target.value);
+                    const chosenId = e.target.value;
+                    setWalkinResourceId(chosenId);
+                    const selected = resources.find(r => r.id === chosenId);
                     if (selected) {
                       setWalkinAmount((selected.hourlyRateCents / 100).toFixed(2));
                     }
@@ -2124,8 +2129,8 @@ export default function AdminDashboardPage() {
                   <div style={{ fontSize: '11px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                     Cash to Collect
                   </div>
-                  <div style={{ fontSize: '16px', fontWeight: 700, color: '#059669', fontFamily: 'var(--font-serif)' }}>
-                    {"\u20B9"}{walkinAmount || '0.00'}
+                  <div style={{ fontSize: '18px', fontWeight: 800, color: '#059669', fontFamily: 'var(--font-serif)' }}>
+                    {"\u20B9"}{walkinAmount || ((resources.find(r => r.id === walkinResourceId)?.hourlyRateCents || 0) / 100).toFixed(2)}
                   </div>
                 </div>
               </div>

@@ -1,3 +1,4 @@
+import { logger } from './logger';
 import dotenv from 'dotenv';
 dotenv.config();
 import nodemailer, { Transporter } from 'nodemailer';
@@ -67,13 +68,13 @@ export async function sendEmailMessage(options: {
 
       const data = (await res.json()) as any;
       if (res.ok) {
-        console.log(`📧 [EMAIL SENT VIA RESEND] To: ${options.to} (ID: ${data.id})`);
+        logger.info({ to: options.to, emailId: data.id }, '📧 [EMAIL SENT VIA RESEND]');
         return;
       } else {
-        console.warn(`⚠️ [Resend Notice] ${data.message || 'Validation error'}`);
+        logger.warn({ to: options.to, notice: data.message }, '⚠️ [Resend Notice]');
       }
     } catch (err) {
-      console.error('Failed to send email via Resend API:', err);
+      logger.error({ err }, 'Failed to send email via Resend API');
     }
   }
 
@@ -90,7 +91,7 @@ export async function sendEmailMessage(options: {
       });
       return;
     } catch (err) {
-      console.error('Failed to send email via SMTP:', err);
+      logger.error({ err }, 'Failed to send email via SMTP');
     }
   }
 
@@ -105,7 +106,7 @@ export async function sendEmailMessage(options: {
       html: options.html,
     });
   } catch (err) {
-    console.error('Dev email error:', err);
+    logger.error({ err }, 'Dev email error');
   }
 }
 
@@ -579,5 +580,86 @@ export async function sendPasswordResetEmail(email: string, otp: string, busines
     });
   } catch (err) {
     console.error('Failed to send password reset email:', err);
+  }
+}
+
+
+/**
+ * Staff & Team Member Invitation Email
+ * Dispatches an official invite link for staff to set their password
+ */
+export async function sendStaffInviteEmail(params: {
+  email: string;
+  staffName: string;
+  businessName: string;
+  inviterName: string;
+  role: string;
+  setupUrl: string;
+}): Promise<void> {
+  const { email, staffName, businessName, inviterName, role, setupUrl } = params;
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
+
+  const roleTitle = role === 'ADMIN' ? 'Workspace Administrator' : 'Front-Desk Operations Staff';
+
+  const html = `
+    <div style="font-family: 'Georgia', serif; max-width: 580px; margin: 0 auto; background-color: #FAF7F2; border: 1px solid #E5DFD5; border-radius: 4px; padding: 36px; color: #171717;">
+      <div style="border-bottom: 2px solid #C1502E; padding-bottom: 16px; margin-bottom: 24px;">
+        <span style="font-size: 24px; font-weight: 700; color: #171717; letter-spacing: -0.5px;">
+          ${businessName}
+        </span>
+        <span style="display: block; font-size: 13px; color: #8A8275; margin-top: 4px; font-family: sans-serif;">
+          Team Member Invitation
+        </span>
+      </div>
+
+      <p style="font-size: 16px; line-height: 1.6; margin-bottom: 16px; font-family: sans-serif;">
+        Hello <strong>${staffName || 'there'}</strong>,
+      </p>
+
+      <p style="font-size: 14px; line-height: 1.6; color: #4A453E; margin-bottom: 24px; font-family: sans-serif;">
+        <strong>${inviterName || 'An administrator'}</strong> has invited you to join the team at <strong>${businessName}</strong> as <strong>${roleTitle}</strong>.
+      </p>
+
+      <div style="background-color: #FFFFFF; border: 1px solid #E5DFD5; border-radius: 4px; padding: 24px; text-align: center; margin-bottom: 28px;">
+        <p style="font-size: 13px; color: #7A7265; margin-bottom: 16px; font-family: sans-serif;">
+          Click the button below to set up your account password and activate your workspace access:
+        </p>
+        <a href="${setupUrl}" style="display: inline-block; background-color: #059669; color: #FFFFFF; padding: 12px 28px; font-family: sans-serif; font-size: 14px; font-weight: 600; text-decoration: none; border-radius: 4px;">
+          Set Up Password &amp; Join
+        </a>
+        <div style="font-size: 11px; color: #8A8275; margin-top: 14px; font-family: sans-serif;">
+          This invitation link expires in 24 hours.
+        </div>
+      </div>
+
+      <p style="font-size: 12px; color: #8A8275; font-family: sans-serif; line-height: 1.5; margin-bottom: 24px;">
+        If you are unable to click the button above, copy and paste this link into your browser:<br/>
+        <a href="${setupUrl}" style="color: #059669; word-break: break-all;">${setupUrl}</a>
+      </p>
+
+      <div style="border-top: 1px solid #E5DFD5; padding-top: 16px; font-size: 11px; color: #A8A297; font-family: sans-serif;">
+        &copy; ${businessName} &bull; Powered by Bespoke Bookings Multi-Tenant Platform
+      </div>
+    </div>
+  `;
+
+  if (isDev) {
+    console.log('\n--------------------------------------------------');
+    console.log(`[DEV EMAIL] Staff Invitation sent to: ${email}`);
+    console.log(`Role: ${role}`);
+    console.log(`Setup URL: ${setupUrl}`);
+    console.log('--------------------------------------------------\n');
+  }
+
+  try {
+    await sendEmailMessage({
+      from: process.env.SMTP_FROM || `"${businessName}" <noreply@bespokebookings.com>`,
+      to: email,
+      subject: `Invitation to join ${businessName} as ${roleTitle}`,
+      text: `You have been invited to join ${businessName} as ${roleTitle}. Set up your password here: ${setupUrl} (Link expires in 24h)`,
+      html,
+    });
+  } catch (err) {
+    console.error('Failed to send staff invitation email:', err);
   }
 }

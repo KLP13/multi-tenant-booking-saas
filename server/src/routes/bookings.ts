@@ -1,6 +1,20 @@
+import { validateRequest } from '../middleware/validate';
+import {
+  createBookingSchema,
+  lockSlotSchema,
+  lockSlotExtendSchema,
+  paymentIntentSchema,
+  createIntentAliasSchema,
+  upiConfirmSchema,
+  razorpayVerifySchema,
+  idParamSchema,
+} from '../schemas';
+import { config } from '../config/env';
+import { confirmBookingWithConflictCheck } from '../services/bookingConfirmation';
 import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
-import { acquireLock, releaseLock, extendLock, isLocked, getLockedCount } from '../lib/redis';
+import { redis, acquireLock, releaseLock, extendLock, isLocked, getLockedCount } from '../lib/redis';
 import { stripe } from '../lib/stripe';
 import { createError } from '../middleware/errorHandler';
 import { sendBookingConfirmationEmail } from '../lib/email';
@@ -136,7 +150,7 @@ router.post('/bookings/check-availability', async (req: Request, res: Response, 
 
 // Places a temporary 10-minute lock on a slot in Redis
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/slots/lock', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/slots/lock', validateRequest(lockSlotSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { resourceId, date, startTime, lockValue } = req.body;
 
@@ -220,7 +234,7 @@ router.post('/slots/lock', async (req: Request, res: Response, next: NextFunctio
 // POST /api/slots/lock/extend
 // Extends an active Redis reservation hold for user currently completing checkout
 // -----------------------------------------------------------------------------
-router.post('/slots/lock/extend', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/slots/lock/extend', validateRequest(lockSlotExtendSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { resourceId, date, startTime, lockValue, extensionSeconds } = req.body;
 
@@ -266,7 +280,7 @@ router.delete('/slots/lock', async (req: Request, res: Response, next: NextFunct
 // POST /api/bookings
 // Create a PENDING booking record
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/bookings', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings', validateRequest(createBookingSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const {
       resourceId,
@@ -275,10 +289,27 @@ router.post('/bookings', async (req: Request, res: Response, next: NextFunction)
       startTime,
       endTime,
       lockValue,
+      tenantId,
+      tenantSlug,
     } = req.body;
 
     if (!resourceId || !customerName || !customerEmail || !startTime || !endTime) {
       throw createError(400, 'All booking fields are required');
+    }
+
+    // 1. Idempotency Key Handling (retry-safe)
+    const idempotencyKey = (req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || req.body.idempotencyKey) as string | undefined;
+    if (idempotencyKey && redis) {
+      const cleanKey = `idempotency:booking:${idempotencyKey.trim()}`;
+      try {
+        const cached = await redis.get(cleanKey);
+        if (cached) {
+          return res.status(200).json({
+            ...JSON.parse(cached),
+            idempotent: true,
+          });
+        }
+      } catch {}
     }
 
     const resource = await prisma.resource.findUnique({
@@ -287,28 +318,62 @@ router.post('/bookings', async (req: Request, res: Response, next: NextFunction)
     });
 
     if (!resource || !resource.isActive) {
-      throw createError(404, 'Resource not found');
+      throw createError(404, 'Resource not found or is currently inactive');
     }
 
+    // 2. Validate resource belongs to requested tenant
+    const requestedTenant = (tenantId || tenantSlug || req.query.tenantId || req.query.tenantSlug) as string | undefined;
+    if (requestedTenant) {
+      if (resource.tenantId !== requestedTenant && resource.tenant?.slug !== requestedTenant) {
+        throw createError(403, 'Requested resource does not belong to the specified business workspace');
+      }
+    }
+
+    // 3. Validate startTime < endTime
     const startDt = new Date(startTime);
     const endDt = new Date(endTime);
 
-    if (isNaN(startDt.getTime()) || isNaN(endDt.getTime()) || startDt >= endDt) {
-      throw createError(400, 'Invalid startTime or endTime');
+    if (isNaN(startDt.getTime()) || isNaN(endDt.getTime())) {
+      throw createError(400, 'Invalid startTime or endTime format');
     }
 
-    // Calculate duration in hours
-    const durationHours = Math.max(1, Math.round((endDt.getTime() - startDt.getTime()) / (1000 * 60 * 60)));
+    if (startDt >= endDt) {
+      throw createError(400, 'startTime must be strictly before endTime');
+    }
+
+    // 4. Validate booking is not in the past (with 60s clock grace)
+    const now = new Date();
+    if (startDt.getTime() < now.getTime() - 60 * 1000) {
+      throw createError(400, 'Cannot book a time slot in the past. Please choose an upcoming slot.');
+    }
+
+    // 5. Validate slot duration alignment
+    const slotDurationMinutes = resource.slotDurationMinutes || 60;
+    const durationMinutes = (endDt.getTime() - startDt.getTime()) / (60 * 1000);
+    if (durationMinutes <= 0 || !Number.isInteger(durationMinutes)) {
+      throw createError(400, 'Booking duration must be a positive integer number of minutes');
+    }
+
+    if (durationMinutes % slotDurationMinutes !== 0) {
+      throw createError(
+        400,
+        `Booking duration (${durationMinutes} mins) must align with resource slot duration of ${slotDurationMinutes} minutes`
+      );
+    }
+
+    // Calculate total amount
+    const durationHours = Math.max(1, Math.round(durationMinutes / 60));
     const totalAmountCents = durationHours * resource.hourlyRateCents;
 
-    // Check overlapping bookings against capacity
+    // 6. Check overlapping bookings against capacity
+    // False conflicts avoided: CANCELLED bookings and expired PENDING bookings are strictly excluded!
     const bookedCount = await prisma.booking.count({
       where: {
         resourceId,
         OR: [
-        { status: 'CONFIRMED' },
-        { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
-      ],
+          { status: 'CONFIRMED' },
+          { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
+        ],
         startTime: { lt: endDt },
         endTime: { gt: startDt },
       },
@@ -319,15 +384,14 @@ router.post('/bookings', async (req: Request, res: Response, next: NextFunction)
       throw createError(409, 'All spots for this time slot are already booked');
     }
 
-
-    const lockExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+    const lockExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes temporary hold
 
     const booking = await prisma.booking.create({
       data: {
         tenantId: resource.tenantId,
         resourceId,
-        customerName,
-        customerEmail,
+        customerName: customerName.trim(),
+        customerEmail: customerEmail.trim().toLowerCase(),
         startTime: startDt,
         endTime: endDt,
         status: 'PENDING',
@@ -340,6 +404,13 @@ router.post('/bookings', async (req: Request, res: Response, next: NextFunction)
       },
     });
 
+    // Cache idempotency response if key provided
+    if (idempotencyKey && redis) {
+      try {
+        await redis.set(`idempotency:booking:${idempotencyKey.trim()}`, JSON.stringify({ booking }), 'EX', 86400);
+      } catch {}
+    }
+
     res.status(201).json({ booking });
   } catch (err) {
     next(err);
@@ -350,9 +421,10 @@ router.post('/bookings', async (req: Request, res: Response, next: NextFunction)
 // POST /api/bookings/:id/payment-intent
 // Create a Stripe PaymentIntent for the booking
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/bookings/:id/payment-intent', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings/:id/payment-intent', validateRequest(paymentIntentSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
+    const idempotencyKey = (req.headers['idempotency-key'] || req.headers['x-idempotency-key'] || req.body.idempotencyKey) as string | undefined;
 
     const booking = await prisma.booking.findUnique({
       where: { id },
@@ -374,10 +446,36 @@ router.post('/bookings/:id/payment-intent', async (req: Request, res: Response, 
       throw createError(400, 'Booking has been cancelled');
     }
 
+    // Retry-safe: If payment intent already exists for this booking, return it idempotently
+    if (booking.stripePaymentIntentId) {
+      if (booking.stripePaymentIntentId.startsWith('pi_mock_')) {
+        return res.json({
+          clientSecret: `${booking.stripePaymentIntentId}_secret_mock`,
+          paymentIntentId: booking.stripePaymentIntentId,
+          amount: booking.totalAmountCents,
+          currency: booking.tenant.currency.toLowerCase(),
+          isMock: true,
+          idempotent: true,
+        });
+      } else if (config.payments.stripe.isConfigured) {
+        try {
+          const existingIntent = await stripe.paymentIntents.retrieve(booking.stripePaymentIntentId);
+          return res.json({
+            clientSecret: existingIntent.client_secret,
+            paymentIntentId: existingIntent.id,
+            amount: booking.totalAmountCents,
+            currency: booking.tenant.currency.toLowerCase(),
+            isMock: false,
+            idempotent: true,
+          });
+        } catch (err: any) {
+          console.warn('[Stripe] Could not retrieve existing intent, creating new:', err.message);
+        }
+      }
+    }
+
     // Check if Stripe is configured
-    const stripeKey = process.env.STRIPE_SECRET_KEY;
-    if (!stripeKey || stripeKey === 'sk_test_placeholder') {
-      // Mock payment intent for local testing
+    if (!config.payments.stripe.isConfigured) {
       const mockIntentId = `pi_mock_${booking.id.replace(/-/g, '').slice(0, 16)}`;
       const mockClientSecret = `${mockIntentId}_secret_mock`;
 
@@ -395,18 +493,23 @@ router.post('/bookings/:id/payment-intent', async (req: Request, res: Response, 
       });
     }
 
-    // Real Stripe PaymentIntent
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: booking.totalAmountCents,
-      currency: booking.tenant.currency.toLowerCase(),
-      metadata: {
-        bookingId: booking.id,
-        tenantId: booking.tenantId,
-        resourceId: booking.resourceId,
+    // Real Stripe PaymentIntent with native Stripe idempotency key
+    const paymentIntent = await stripe.paymentIntents.create(
+      {
+        amount: booking.totalAmountCents,
+        currency: booking.tenant.currency.toLowerCase(),
+        metadata: {
+          bookingId: booking.id,
+          tenantId: booking.tenantId,
+          resourceId: booking.resourceId,
+        },
+        receipt_email: booking.customerEmail,
+        description: `Booking for ${booking.resource.name} (${booking.tenant.name})`,
       },
-      receipt_email: booking.customerEmail,
-      description: `Booking for ${booking.resource.name} (${booking.tenant.name})`,
-    });
+      {
+        idempotencyKey: idempotencyKey ? `pi_${idempotencyKey.trim()}` : `pi_booking_${booking.id}`,
+      }
+    );
 
     await prisma.booking.update({
       where: { id },
@@ -434,7 +537,7 @@ router.post('/bookings/:id/payment-intent', async (req: Request, res: Response, 
 // POST /api/payments/create-intent
 // Standardized alias route for creating Stripe PaymentIntents by bookingId
 // -----------------------------------------------------------------------------
-router.post('/payments/create-intent', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/payments/create-intent', validateRequest(createIntentAliasSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { bookingId } = req.body;
     if (!bookingId) {
@@ -499,44 +602,14 @@ router.post('/payments/create-intent', async (req: Request, res: Response, next:
   }
 });
 
-router.post('/bookings/:id/confirm-test', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings/:id/confirm-test', validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
-
-    const booking = await prisma.booking.findUnique({
-      where: { id },
+    const { booking, alreadyConfirmed } = await confirmBookingWithConflictCheck({
+      bookingId: id,
+      paymentMethod: 'TEST',
     });
-
-    if (!booking) {
-      throw createError(404, 'Booking not found');
-    }
-
-    const updated = await prisma.booking.update({
-      where: { id },
-      data: {
-        status: 'CONFIRMED',
-        lockExpiresAt: null,
-      },
-      include: {
-        resource: true,
-        tenant: true,
-      },
-    });
-
-    // Release Redis lock if any
-    const dateStr = booking.startTime.toISOString().split('T')[0];
-    const timeStr = booking.startTime.toISOString().split('T')[1].slice(0, 5);
-    // Best effort release
-    await releaseLock(booking.resourceId, dateStr, timeStr, id);
-
-    // Send confirmation email with iCalendar invite
-    sendBookingConfirmationEmail({
-      booking: updated,
-      resource: updated.resource,
-      tenant: updated.tenant,
-    }).catch((err) => console.error('Failed to send booking confirmation email:', err));
-
-    res.json({ success: true, booking: updated });
+    res.json({ success: true, booking, alreadyConfirmed });
   } catch (err) {
     next(err);
   }
@@ -546,50 +619,26 @@ router.post('/bookings/:id/confirm-test', async (req: Request, res: Response, ne
 // POST /api/bookings/:id/upi/confirm
 // Confirms booking paid via UPI QR / VPA
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/bookings/:id/upi/confirm', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings/:id/upi/confirm', validateRequest(upiConfirmSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
     const { upiId } = req.body;
 
-    const booking = await prisma.booking.findUnique({
-      where: { id },
+    // Cryptographically secure UPI reference
+    const upiRef = `upi_${Date.now().toString(36)}_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
+
+    const { booking, alreadyConfirmed } = await confirmBookingWithConflictCheck({
+      bookingId: id,
+      paymentMethod: 'UPI',
+      razorpayPaymentId: upiRef,
     });
-
-    if (!booking) {
-      throw createError(404, 'Booking not found');
-    }
-
-    const upiRef = `upi_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
-
-    const updated = await prisma.booking.update({
-      where: { id },
-      data: {
-        status: 'CONFIRMED',
-        razorpayPaymentId: upiRef,
-        lockExpiresAt: null,
-      },
-      include: {
-        resource: true,
-        tenant: true,
-      },
-    });
-
-    // Release Redis lock if any
-    const dateStr = booking.startTime.toISOString().split('T')[0];
-    const timeStr = booking.startTime.toISOString().split('T')[1].slice(0, 5);
-    await releaseLock(booking.resourceId, dateStr, timeStr, id);
-
-    // Send confirmation email with Google Calendar link
-    sendBookingConfirmationEmail({
-      booking: updated,
-      resource: updated.resource,
-      tenant: updated.tenant,
-    }).catch((err) => console.error('Failed to send UPI booking confirmation email:', err));
 
     res.json({
       success: true,
-      message: `Payment of ₹${(updated.totalAmountCents / 100).toFixed(2)} received via UPI (${upiId || 'QR'})`,
-      booking: updated,
+      message: alreadyConfirmed
+        ? 'Reservation is already confirmed'
+        : `Payment of ₹${(booking.totalAmountCents / 100).toFixed(2)} received via UPI (${upiId || 'QR'})`,
+      booking,
     });
   } catch (err) {
     next(err);
@@ -600,7 +649,7 @@ router.post('/bookings/:id/upi/confirm', async (req: Request, res: Response, nex
 // GET /api/bookings/:id
 // Get booking details (for confirmation page)
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/bookings/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/bookings/:id', validateRequest(idParamSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
 
@@ -715,25 +764,13 @@ router.post('/bookings/:id/razorpay/create-order', async (req: Request, res: Res
 // POST /api/bookings/:id/razorpay/verify
 // Verifies HMAC SHA-256 signature and confirms reservation
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/bookings/:id/razorpay/verify', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/bookings/:id/razorpay/verify', validateRequest(razorpayVerifySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
 
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
       throw createError(400, 'razorpay_order_id, razorpay_payment_id, and razorpay_signature are required');
-    }
-
-    const booking = await prisma.booking.findUnique({
-      where: { id },
-      include: {
-        resource: true,
-        tenant: true,
-      },
-    });
-
-    if (!booking) {
-      throw createError(404, 'Booking not found');
     }
 
     // Verify cryptographic HMAC signature
@@ -747,35 +784,17 @@ router.post('/bookings/:id/razorpay/verify', async (req: Request, res: Response,
       throw createError(400, 'Invalid Razorpay payment signature');
     }
 
-    const updated = await prisma.booking.update({
-      where: { id },
-      data: {
-        status: 'CONFIRMED',
-        razorpayPaymentId: razorpay_payment_id,
-        lockExpiresAt: null,
-      },
-      include: {
-        resource: true,
-        tenant: true,
-      },
+    const { booking, alreadyConfirmed } = await confirmBookingWithConflictCheck({
+      bookingId: id,
+      paymentMethod: 'RAZORPAY',
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
     });
-
-    // Release Redis lock if any
-    const dateStr = booking.startTime.toISOString().split('T')[0];
-    const timeStr = booking.startTime.toISOString().split('T')[1].slice(0, 5);
-    await releaseLock(booking.resourceId, dateStr, timeStr, id);
-
-    // Send confirmation email with .ics calendar invite
-    sendBookingConfirmationEmail({
-      booking: updated,
-      resource: updated.resource,
-      tenant: updated.tenant,
-    }).catch((err) => console.error('Failed to send confirmation email on Razorpay payment:', err));
 
     res.json({
       success: true,
-      message: 'Payment verified and reservation confirmed!',
-      booking: updated,
+      message: alreadyConfirmed ? 'Reservation is already verified' : 'Payment verified and reservation confirmed!',
+      booking,
     });
   } catch (err) {
     next(err);

@@ -1,9 +1,11 @@
+import { logger } from './logger';
 import Stripe from 'stripe';
+import { config } from '../config/env';
 
-if (!process.env.STRIPE_SECRET_KEY) {
-  console.warn('⚠️  STRIPE_SECRET_KEY not set — payment features will not work');
+if (!config.payments.stripe.isConfigured) {
+  logger.warn('⚠️  STRIPE_SECRET_KEY not set — payment features will not work');
 }
 
-export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? 'sk_test_placeholder', {
+export const stripe = new Stripe(config.payments.stripe.secretKey ?? 'sk_test_placeholder', {
   apiVersion: '2026-08-26.dahlia' as any,
 });
