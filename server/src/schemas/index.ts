@@ -33,7 +33,21 @@ export const timeStringSchema = z
 export const dateStringSchema = z
   .string()
   .trim()
-  .regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/, 'Date must be in YYYY-MM-DD format');
+  .refine(
+    (val) => {
+      if (/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(val)) return true;
+      if (/^(0[1-9]|[12]\d|3[01])-(0[1-9]|1[0-2])-\d{4}$/.test(val)) return true;
+      return false;
+    },
+    { message: 'Date must be in YYYY-MM-DD or DD-MM-YYYY format' }
+  )
+  .transform((val) => {
+    if (/^(0[1-9]|[12]\d|3[01])-(0[1-9]|1[0-2])-\d{4}$/.test(val)) {
+      const [d, m, y] = val.split('-');
+      return `${y}-${m}-${d}`;
+    }
+    return val;
+  });
 
 export const isoDateTimeSchema = z
   .string()
@@ -205,17 +219,12 @@ export const createBookingSchema = {
 };
 
 export const lockSlotSchema = {
-  body: z
-    .object({
-      resourceId: uuidSchema,
-      startTime: isoDateTimeSchema,
-      endTime: isoDateTimeSchema,
-      lockValue: z.string().trim().optional(),
-    })
-    .refine((data) => new Date(data.startTime) < new Date(data.endTime), {
-      message: 'startTime must be chronologically before endTime',
-      path: ['endTime'],
-    }),
+  body: z.object({
+    resourceId: uuidSchema,
+    date: dateStringSchema,
+    startTime: timeStringSchema,
+    lockValue: z.string().trim().min(1, 'lockValue is required to acquire lock'),
+  }),
 };
 
 export const lockSlotExtendSchema = {
@@ -311,12 +320,13 @@ export const blockSlotSchema = {
   body: z
     .object({
       resourceId: uuidSchema,
-      startTime: isoDateTimeSchema,
-      endTime: isoDateTimeSchema,
+      date: dateStringSchema,
+      startTime: timeStringSchema,
+      endTime: timeStringSchema,
       reason: z.string().trim().max(255).optional(),
     })
-    .refine((data) => new Date(data.startTime) < new Date(data.endTime), {
-      message: 'startTime must be chronologically before endTime',
+    .refine((data) => data.startTime < data.endTime, {
+      message: 'startTime must be before endTime',
       path: ['endTime'],
     }),
 };
@@ -335,17 +345,26 @@ export const adminWalkInSchema = {
   body: z
     .object({
       resourceId: uuidSchema,
+      date: dateStringSchema,
+      startTime: timeStringSchema,
+      endTime: timeStringSchema,
       customerName: z.string().trim().min(2, 'Customer name must be at least 2 characters').max(100),
-      customerEmail: emailSchema,
+      customerEmail: z
+        .string()
+        .trim()
+        .toLowerCase()
+        .max(255)
+        .optional()
+        .refine((val) => !val || z.string().email().safeParse(val).success, {
+          message: 'Invalid customer email address',
+        }),
       customerPhone: z.string().trim().max(30).optional(),
-      startTime: isoDateTimeSchema,
-      endTime: isoDateTimeSchema,
       amountPaidCents: currencyAmountSchema.optional(),
       paymentMethod: z.enum(['CASH', 'UPI', 'CARD', 'OTHER']).optional(),
       notes: z.string().trim().max(500).optional(),
     })
-    .refine((data) => new Date(data.startTime) < new Date(data.endTime), {
-      message: 'startTime must be chronologically before endTime',
+    .refine((data) => data.startTime < data.endTime, {
+      message: 'startTime must be before endTime',
       path: ['endTime'],
     }),
 };

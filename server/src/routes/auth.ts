@@ -1,3 +1,9 @@
+import {
+  loginRateLimiter,
+  otpRateLimiter,
+  registerRateLimiter,
+  passwordResetRateLimiter,
+} from '../middleware/rateLimiter';
 import { validateRequest } from '../middleware/validate';
 import {
   sendRegistrationOtpSchema,
@@ -26,7 +32,7 @@ const router = Router();
  * POST /api/auth/send-registration-otp
  * Generates and sends a 6-digit OTP to verify manual tenant registration
  */
-router.post('/send-registration-otp', validateRequest(sendRegistrationOtpSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/send-registration-otp', validateRequest(sendRegistrationOtpSchema), otpRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, businessName, slug } = req.body;
 
@@ -89,7 +95,7 @@ router.post('/send-registration-otp', validateRequest(sendRegistrationOtpSchema)
  * Body: { businessName, slug, currency, adminName, email, password, otp }
  * Returns: { token, tenant, user }
  */
-router.post('/register-tenant', validateRequest(registerTenantSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/register-tenant', validateRequest(registerTenantSchema), registerRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { businessName, slug, currency = 'INR', adminName, email, password, confirmPassword, otp } = req.body;
 
@@ -319,7 +325,7 @@ router.post('/universal-login', validateRequest(universalLoginSchema), async (re
  * Universal Google OAuth endpoint for both login and new tenant onboarding
  * Body: { email, name, businessName?, slug? }
  */
-router.post('/google', validateRequest(googleAuthSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/google', validateRequest(googleAuthSchema), loginRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, name, businessName, slug } = req.body;
 
@@ -446,7 +452,7 @@ router.post('/google', validateRequest(googleAuthSchema), async (req: Request, r
  * POST /api/auth/forgot-password
  * Initiates password reset by sending a 6-digit verification code to the user's email
  */
-router.post('/forgot-password', validateRequest(forgotPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/forgot-password', validateRequest(forgotPasswordSchema), passwordResetRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, tenantSlug } = req.body;
 
@@ -505,7 +511,7 @@ router.post('/forgot-password', validateRequest(forgotPasswordSchema), async (re
  * POST /api/auth/reset-password
  * Verifies the 6-digit code and updates the user's password
  */
-router.post('/reset-password', validateRequest(resetPasswordSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/reset-password', validateRequest(resetPasswordSchema), passwordResetRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { email, otp, newPassword } = req.body;
 

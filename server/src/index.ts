@@ -1,10 +1,13 @@
 import path from 'path';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import dotenv from 'dotenv';
 import { config } from './config/env';
 import { logger } from './lib/logger';
 import { requestIdMiddleware } from './middleware/requestId';
+import { prisma } from './lib/prisma';
+import { redis } from './lib/redis';
 
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
@@ -16,41 +19,85 @@ import bookingRoutes from './routes/bookings';
 import adminRoutes from './routes/admin';
 import superadminRoutes from './routes/superadmin';
 import webhookRoutes from './routes/webhook';
+import healthRoutes from './routes/health';
 
 // Middleware imports
 import { errorHandler } from './middleware/errorHandler';
 
-// Lib connections
-import './lib/prisma';   // initializes Prisma client
-import './lib/redis';    // initializes Redis client / fallback
-
 const app = express();
 const PORT = config.port;
 
-// ─── Middleware ────────────────────────────────────────────────────────────
+// ─── 1. Security Headers & Proxy Configuration ──────────────────────────────
 
-// 1. Request correlation ID & request latency logging (must be very first)
+// Reverse proxy trust: enables accurate req.ip & secure proto behind reverse proxies
+app.set('trust proxy', config.isProduction ? 1 : false);
+
+// Explicitly disable X-Powered-By header to obscure technology stack
+app.disable('x-powered-by');
+
+// Helmet security headers (CSP, HSTS, X-Content-Type-Options, etc.)
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
+
+// ─── 2. Request Correlation & Context ──────────────────────────────────────
+
+// Request correlation ID & request latency logging (must precede route handlers)
 app.use(requestIdMiddleware);
 
-// 2. CORS
-app.use(cors({
-  origin: config.clientUrl,
-  credentials: true,
-}));
+// ─── 3. Stricter CORS Configuration ────────────────────────────────────────
 
-// Raw body required for Stripe webhook signature verification
-app.use('/api/webhook', express.raw({ type: 'application/json' }), webhookRoutes);
+const allowedOrigins = [
+  config.clientUrl,
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3001',
+].filter(Boolean);
 
-// JSON body parser for all other routes
-app.use(express.json());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      // In development mode, allow localhost on any port
+      if (config.isDevelopment && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin ${origin} not allowed by CORS policy`));
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID', 'Idempotency-Key'],
+    exposedHeaders: ['X-Request-ID', 'Retry-After', 'Idempotency-Key'],
+    credentials: true,
+    maxAge: 86400, // 24-hour preflight cache
+  })
+);
 
-// ─── Routes ───────────────────────────────────────────────────────────────
+// ─── 4. Body-Size Limits ───────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// Raw body required for Stripe webhook signature verification (capped at 2mb)
+app.use('/api/webhook', express.raw({ type: 'application/json', limit: '2mb' }), webhookRoutes);
 
-// Authentication
+// JSON body parser with strict 100kb limit to prevent payload bomb DoS attacks
+app.use(express.json({ limit: '100kb' }));
+
+// URL-encoded form parser with strict 100kb limit
+app.use(express.urlencoded({ extended: true, limit: '100kb' }));
+
+// ─── 5. Health & Readiness Probes ──────────────────────────────────────────
+
+app.use('/health', healthRoutes);
+app.use('/api/health', healthRoutes);
+
+// ─── 6. Domain Application Routes ──────────────────────────────────────────
+
+// Authentication & Staff Onboarding
 app.use('/api/auth', authRoutes);
 
 // Public tenant & slot browsing
@@ -65,12 +112,55 @@ app.use('/api/admin', adminRoutes);
 // Superadmin platform management
 app.use('/api/superadmin', superadminRoutes);
 
-// ─── Error Handler (must be last) ─────────────────────────────────────────
+// ─── 7. Centralized Error Handler (must be last) ───────────────────────────
 
 app.use(errorHandler);
 
-// ─── Start Server ─────────────────────────────────────────────────────────
+// ─── 8. Server Startup & Graceful Shutdown ────────────────────────────────
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info({ port: PORT, env: config.nodeEnv }, `🚀 Server running on http://localhost:${PORT}`);
 });
+
+let isShuttingDown = false;
+
+function handleGracefulShutdown(signal: string): void {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logger.info({ signal }, `[Shutdown] Received ${signal}. Starting graceful shutdown...`);
+
+  // Stop accepting new connections
+  server.close(async () => {
+    logger.info('[Shutdown] HTTP listener closed. Draining database and cache connections...');
+
+    try {
+      await prisma.$disconnect();
+      logger.info('[Shutdown] Database connection disconnected.');
+    } catch (err) {
+      logger.error({ err }, '[Shutdown] Error disconnecting Prisma database');
+    }
+
+    try {
+      if (redis && typeof redis.quit === 'function') {
+        await redis.quit();
+        logger.info('[Shutdown] Redis connection closed.');
+      }
+    } catch (err) {
+      logger.error({ err }, '[Shutdown] Error disconnecting Redis');
+    }
+
+    logger.info('[Shutdown] Graceful shutdown completed cleanly.');
+    process.exit(0);
+  });
+
+  // Force process exit if connections do not drain within safety timeout
+  setTimeout(() => {
+    logger.error('[Shutdown] Forceful shutdown initiated after 10s timeout.');
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));
+
+export default app;
