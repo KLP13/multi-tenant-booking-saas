@@ -34,13 +34,22 @@ export default function TenantBookingPage() {
   }
 
   // Handle user clicking an open slot in SlotGrid
-  const handleSlotSelect = async (slot, date) => {
-    const res = await lockState.acquireSlotLock(selectedResource.id, date, slot.startTime);
+  const handleSlotSelect = async (slot, date, durationMinutes = 60, endTime = null) => {
+    const res = await lockState.acquireSlotLock(
+      selectedResource.id,
+      date,
+      slot.startTime,
+      durationMinutes,
+      endTime || slot.endTime
+    );
     if (res?.success) {
       setCheckoutSlot({
         date,
         startTime: slot.startTime,
-        endTime: slot.endTime,
+        endTime: res.slot?.endTime || endTime || slot.endTime,
+        durationMinutes: res.slot?.durationMinutes || durationMinutes,
+        slotCount: res.slot?.slotCount || 1,
+        slotTimes: res.slot?.slotTimes || [slot.startTime],
       });
     }
   };
@@ -160,7 +169,7 @@ export default function TenantBookingPage() {
 
             <SlotGrid
               resource={selectedResource}
-              selectedSlot={lockState.lockedSlot}
+              selectedSlot={checkoutSlot || lockState.lockedSlot}
               onSelectSlot={handleSlotSelect}
             />
           </div>

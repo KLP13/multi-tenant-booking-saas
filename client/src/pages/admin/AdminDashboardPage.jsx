@@ -81,6 +81,7 @@ export default function AdminDashboardPage() {
   const [walkinIsClosed, setWalkinIsClosed] = useState(false);
   const [walkinClosedMsg, setWalkinClosedMsg] = useState('');
   const [selectedWalkinSlot, setSelectedWalkinSlot] = useState(null);
+  const [selectedWalkinDuration, setSelectedWalkinDuration] = useState(1);
   const [walkinCustomerName, setWalkinCustomerName] = useState('');
   const [walkinCustomerPhone, setWalkinCustomerPhone] = useState('');
   const [walkinCustomerEmail, setWalkinCustomerEmail] = useState('');
@@ -1921,10 +1922,11 @@ export default function AdminDashboardPage() {
                   onChange={(e) => {
                     const chosenId = e.target.value;
                     setWalkinResourceId(chosenId);
-                    const selected = resources.find(r => r.id === chosenId);
-                    if (selected) {
-                      setWalkinAmount((selected.hourlyRateCents / 100).toFixed(2));
-                    }
+                      const selected = resources.find(r => r.id === chosenId);
+                      if (selected) {
+                        const baseRate = selected.hourlyRateCents / 100;
+                        setWalkinAmount((baseRate * selectedWalkinDuration).toFixed(2));
+                      }
                   }}
                   className="input-field"
                   required
@@ -1973,7 +1975,53 @@ export default function AdminDashboardPage() {
 
               {/* Live Slot Availability Grid */}
               <div style={{ marginBottom: '18px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <div style={{ marginBottom: '14px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <label className="input-label" style={{ margin: 0 }}>Booking Duration</label>
+                      <span style={{ fontSize: '11px', color: '#059669', fontWeight: 600 }}>
+                        {selectedWalkinDuration} {selectedWalkinDuration > 1 ? 'Hours' : 'Hour'}
+                        {selectedWalkinSlot && ` (${selectedWalkinSlot.startTime} - ${selectedWalkinSlot.endTime})`}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      {[1, 2, 3, 4].map((hrs) => (
+                        <button
+                          key={hrs}
+                          type="button"
+                          onClick={() => {
+                            setSelectedWalkinDuration(hrs);
+                            const chosenRes = resources.find(r => r.id === (walkinResourceId || resources[0]?.id));
+                            if (chosenRes) {
+                              const rate = chosenRes.hourlyRateCents / 100;
+                              setWalkinAmount((rate * hrs).toFixed(2));
+                            }
+                            if (selectedWalkinSlot) {
+                              const idx = walkinSlots.findIndex(s => s.startTime === selectedWalkinSlot.startTime);
+                              if (idx !== -1 && idx + hrs <= walkinSlots.length) {
+                                const endS = walkinSlots[idx + hrs - 1];
+                                setSelectedWalkinSlot(prev => ({ ...prev, endTime: endS.endTime, slotCount: hrs }));
+                              }
+                            }
+                          }}
+                          style={{
+                            flex: 1,
+                            padding: '6px 4px',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            fontWeight: selectedWalkinDuration === hrs ? 700 : 500,
+                            border: selectedWalkinDuration === hrs ? '1px solid #059669' : '1px solid var(--border)',
+                            backgroundColor: selectedWalkinDuration === hrs ? 'rgba(5, 150, 105, 0.15)' : 'var(--bg)',
+                            color: selectedWalkinDuration === hrs ? '#059669' : 'var(--text-primary)',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                          }}
+                        >
+                          {hrs} {hrs > 1 ? 'Hours' : 'Hour'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
                   <label className="input-label" style={{ margin: 0 }}>Available Slots *</label>
                   <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                     {walkinSlots.filter(s => s.status === 'available' && !isSlotInPast(walkinDate, s.startTime)).length} available
@@ -2004,10 +2052,12 @@ export default function AdminDashboardPage() {
                     borderRadius: '4px',
                     backgroundColor: 'var(--bg)',
                   }}>
-                    {walkinSlots.map((slot) => {
-                      const isPast = isSlotInPast(walkinDate, slot.startTime);
-                      const isAvailable = slot.status === 'available' && !isPast;
-                      const isSelected = selectedWalkinSlot?.startTime === slot.startTime;
+                    {walkinSlots.map((slot, idx) => {
+                        const isPast = isSlotInPast(walkinDate, slot.startTime);
+                        const isAvailable = slot.status === 'available' && !isPast;
+                        const isSelected = selectedWalkinSlot && (
+                          slot.startTime >= selectedWalkinSlot.startTime && slot.startTime < selectedWalkinSlot.endTime
+                        );
 
                       let statusBadge = 'Available';
                       if (isPast) statusBadge = 'Past';
@@ -2020,7 +2070,19 @@ export default function AdminDashboardPage() {
                           key={slot.startTime}
                           type="button"
                           disabled={!isAvailable}
-                          onClick={() => setSelectedWalkinSlot(slot)}
+                          onClick={() => {
+                              const chosenRes = resources.find(r => r.id === (walkinResourceId || resources[0]?.id));
+                              const rate = (chosenRes?.hourlyRateCents || 0) / 100;
+                              setWalkinAmount((rate * selectedWalkinDuration).toFixed(2));
+                              const endS = (idx + selectedWalkinDuration <= walkinSlots.length)
+                                ? walkinSlots[idx + selectedWalkinDuration - 1]
+                                : slot;
+                              setSelectedWalkinSlot({
+                                ...slot,
+                                endTime: endS.endTime,
+                                slotCount: selectedWalkinDuration,
+                              });
+                            }}
                           style={{
                             padding: '8px 6px',
                             borderRadius: '4px',

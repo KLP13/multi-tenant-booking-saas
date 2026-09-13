@@ -3,6 +3,7 @@ import {
   createBookingSchema,
   lockSlotSchema,
   lockSlotExtendSchema,
+  releaseSlotSchema,
   paymentIntentSchema,
   createIntentAliasSchema,
   upiConfirmSchema,
@@ -14,13 +15,45 @@ import { confirmBookingWithConflictCheck } from '../services/bookingConfirmation
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { prisma } from '../lib/prisma';
-import { redis, acquireLock, releaseLock, extendLock, isLocked, getLockedCount } from '../lib/redis';
+import { redis, acquireLock, releaseLock, extendLock, isLocked, getLockedCount, acquireMultiSlotLock, releaseMultiSlotLock, extendMultiSlotLock } from '../lib/redis';
 import { stripe } from '../lib/stripe';
 import { createError } from '../middleware/errorHandler';
 import { sendBookingConfirmationEmail } from '../lib/email';
 import { razorpay, verifyRazorpaySignature } from '../lib/razorpay';
 
 const router = Router();
+
+// Fast in-memory cache for resource configs (avoids repetitive 1.2s cloud database roundtrips)
+const resourceConfigCache = new Map<string, { resource: any; expiresAt: number }>();
+
+async function getCachedResource(resourceId: string) {
+  const cached = resourceConfigCache.get(resourceId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.resource;
+  }
+  const resource = await prisma.resource.findUnique({
+    where: { id: resourceId },
+  });
+  if (resource) {
+    resourceConfigCache.set(resourceId, { resource, expiresAt: Date.now() + 60_000 });
+  }
+  return resource;
+}
+
+
+function getInterveningSlots(startTime: string, endTime: string, slotDurationMinutes: number): string[] {
+  const [startH, startM] = startTime.split(':').map(Number);
+  const [endH, endM] = endTime.split(':').map(Number);
+  const startMins = startH * 60 + startM;
+  const endMins = endH * 60 + endM;
+  const slots: string[] = [];
+  for (let m = startMins; m < endMins; m += slotDurationMinutes) {
+    const hStr = String(Math.floor(m / 60)).padStart(2, '0');
+    const mStr = String(m % 60).padStart(2, '0');
+    slots.push(`${hStr}:${mStr}`);
+  }
+  return slots.length > 0 ? slots : [startTime];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/slots/lock
@@ -148,11 +181,11 @@ router.post('/bookings/check-availability', async (req: Request, res: Response, 
   }
 });
 
-// Places a temporary 10-minute lock on a slot in Redis
-// ─────────────────────────────────────────────────────────────────────────────
+// Places a temporary 10-minute lock on a slot or continuous multi-slot duration in Redis
+// -----------------------------------------------------------------------------
 router.post('/slots/lock', validateRequest(lockSlotSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { resourceId, date, startTime, lockValue } = req.body;
+    const { resourceId, date, startTime, endTime: customEndTime, durationMinutes: customDurationMinutes, lockValue } = req.body;
 
     if (!resourceId || !date || !startTime || !lockValue) {
       throw createError(400, 'resourceId, date, startTime, and lockValue are required');
@@ -163,61 +196,105 @@ router.post('/slots/lock', validateRequest(lockSlotSchema), async (req: Request,
       throw createError(400, 'Invalid date (YYYY-MM-DD) or startTime (HH:mm) format');
     }
 
-    const resource = await prisma.resource.findUnique({
-      where: { id: resourceId },
-    });
+    const resource = await getCachedResource(resourceId);
 
     if (!resource || !resource.isActive) {
       throw createError(404, 'Resource not found or inactive');
     }
 
-    // Check if booked in DB against resource capacity
-    const startHour = parseInt(startTime.split(':')[0], 10);
-    const endHour = startHour + 1;
-    const endTime = `${String(endHour).padStart(2, '0')}:00`;
+    const slotDuration = resource.slotDurationMinutes || 60;
+    const [startH, startM] = startTime.split(':').map(Number);
+    const startTotalMins = startH * 60 + startM;
 
-    const slotStartDt = new Date(`${date}T${startTime}:00.000Z`);
-    const slotEndDt = new Date(`${date}T${endTime}:00.000Z`);
+    // Calculate effective duration and end time
+    let effectiveDurationMins = slotDuration;
+    if (customDurationMinutes && Number(customDurationMinutes) > 0) {
+      effectiveDurationMins = Number(customDurationMinutes);
+    } else if (customEndTime) {
+      const [endH, endM] = customEndTime.split(':').map(Number);
+      const endTotalMins = endH * 60 + endM;
+      if (endTotalMins > startTotalMins) {
+        effectiveDurationMins = endTotalMins - startTotalMins;
+      }
+    }
 
-    // Ensure slot is not in the past
-    if (slotEndDt.getTime() < Date.now() - 15 * 60 * 1000) {
+    const endTotalMins = startTotalMins + effectiveDurationMins;
+    const computedEndH = Math.floor(endTotalMins / 60);
+    const computedEndM = endTotalMins % 60;
+    const effectiveEndTime = `${String(computedEndH).padStart(2, '0')}:${String(computedEndM).padStart(2, '0')}`;
+
+    // Operating hours check
+    if (startTime < resource.openTime || effectiveEndTime > resource.closeTime) {
+      throw createError(400, `Selected time range is outside operating hours (${resource.openTime} - ${resource.closeTime})`);
+    }
+
+    // Get all individual slots in this contiguous span
+    const slotTimes = getInterveningSlots(startTime, effectiveEndTime, slotDuration);
+
+    const fullStartDt = new Date(`${date}T${startTime}:00.000Z`);
+    const fullEndDt = new Date(`${date}T${effectiveEndTime}:00.000Z`);
+
+    // Ensure entire span is not in the past
+    if (fullEndDt.getTime() < Date.now() - 60 * 1000) {
       throw createError(400, 'Cannot hold or book a time slot that has already concluded');
     }
 
-    const bookedCount = await prisma.booking.count({
+    const totalCapacity = resource.capacity || 1;
+    const availableCapacities: Record<string, number> = {};
+
+    // Validate availability for all slots in the span with ONE single database query
+    const overlappingBookings = await prisma.booking.findMany({
       where: {
         resourceId,
         OR: [
-        { status: 'CONFIRMED' },
-        { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
-      ],
-        startTime: { lt: slotEndDt },
-        endTime: { gt: slotStartDt },
+          { status: 'CONFIRMED' },
+          { status: 'PENDING', lockExpiresAt: { gt: new Date() } },
+        ],
+        startTime: { lt: fullEndDt },
+        endTime: { gt: fullStartDt },
+      },
+      select: {
+        startTime: true,
+        endTime: true,
       },
     });
+    
+    for (const sTime of slotTimes) {
+      const [sh, sm] = sTime.split(':').map(Number);
+      const slotEndTotal = sh * 60 + sm + slotDuration;
+      const sEndTime = `${String(Math.floor(slotEndTotal / 60)).padStart(2, '0')}:${String(slotEndTotal % 60).padStart(2, '0')}`;
+      const sStartDt = new Date(`${date}T${sTime}:00.000Z`);
+      const sEndDt = new Date(`${date}T${sEndTime}:00.000Z`);
 
-    const totalCapacity = resource.capacity || 1;
-    const availableCapacity = totalCapacity - bookedCount;
+      const bookedCount = overlappingBookings.filter(
+        (b) => b.startTime < sEndDt && b.endTime > sStartDt
+      ).length;
 
-    if (availableCapacity <= 0) {
-      throw createError(409, 'All spots for this time slot are already booked');
+      const avail = totalCapacity - bookedCount;
+      if (avail <= 0) {
+        throw createError(409, `Slot ${sTime} - ${sEndTime} is already fully booked`);
+      }
+      availableCapacities[sTime] = avail;
     }
 
-    // Try acquiring Redis / in-memory lock respecting available capacity
-    const acquired = await acquireLock(resourceId, date, startTime, lockValue, availableCapacity);
-
+    // Atomically acquire locks across all slots in the span
+    const acquired = await acquireMultiSlotLock(resourceId, date, slotTimes, lockValue, availableCapacities);
+    
     if (!acquired) {
-      throw createError(409, 'All available units for this slot are currently being held at checkout');
+      throw createError(409, 'One or more slots in the selected duration are currently being held at checkout');
     }
 
-    res.json({
+        res.json({
       success: true,
-      message: 'Slot locked for 10 minutes',
+      message: `Reserved ${slotTimes.length} slot(s) for 10 minutes`,
       lockValue,
       resourceId,
       date,
       startTime,
-      endTime,
+      endTime: effectiveEndTime,
+      durationMinutes: effectiveDurationMins,
+      slotCount: slotTimes.length,
+      slotTimes,
       expiresInSeconds: 600,
     });
   } catch (err) {
@@ -225,25 +302,40 @@ router.post('/slots/lock', validateRequest(lockSlotSchema), async (req: Request,
   }
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DELETE /api/slots/lock
-// Release a previously acquired lock
-// ─────────────────────────────────────────────────────────────────────────────
-
 // -----------------------------------------------------------------------------
 // POST /api/slots/lock/extend
 // Extends an active Redis reservation hold for user currently completing checkout
 // -----------------------------------------------------------------------------
 router.post('/slots/lock/extend', validateRequest(lockSlotExtendSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { resourceId, date, startTime, lockValue, extensionSeconds } = req.body;
+    const { resourceId, date, startTime, endTime, durationMinutes, lockValue, extendSeconds } = req.body;
 
-    if (!resourceId || !date || !startTime || !lockValue) {
-      throw createError(400, 'resourceId, date, startTime, and lockValue are required');
+    if (!resourceId || !startTime || !lockValue) {
+      throw createError(400, 'resourceId, startTime, and lockValue are required');
     }
 
-    const ttl = Math.min(Number(extensionSeconds) || 600, 1800); // max 30 min
-    const extended = await extendLock(resourceId, date, startTime, lockValue, ttl);
+    let slotTimes = [startTime];
+    if (date && (endTime || durationMinutes)) {
+      const resource = await prisma.resource.findUnique({
+        where: { id: resourceId },
+        select: { slotDurationMinutes: true },
+      });
+      const slotDuration = resource?.slotDurationMinutes || 60;
+      let effectiveEndTime = endTime;
+      if (!effectiveEndTime && durationMinutes) {
+        const [sh, sm] = startTime.split(':').map(Number);
+        const endTotal = sh * 60 + sm + Number(durationMinutes);
+        effectiveEndTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
+      }
+      if (effectiveEndTime) {
+        slotTimes = getInterveningSlots(startTime, effectiveEndTime, slotDuration);
+      }
+    }
+
+    const ttl = Math.min(Number(extendSeconds) || 600, 1800); // max 30 min
+    const extended = date
+      ? await extendMultiSlotLock(resourceId, date, slotTimes, lockValue, ttl)
+      : await extendLock(resourceId, '', startTime, lockValue, ttl);
 
     if (!extended) {
       throw createError(404, 'Active lock expired or does not exist');
@@ -251,7 +343,7 @@ router.post('/slots/lock/extend', validateRequest(lockSlotExtendSchema), async (
 
     res.json({
       success: true,
-      message: `Lock extended for ${ttl} seconds`,
+      message: `Lock extended for ${ttl} seconds across ${slotTimes.length} slot(s)`,
       lockValue,
       expiresInSeconds: ttl,
     });
@@ -260,17 +352,39 @@ router.post('/slots/lock/extend', validateRequest(lockSlotExtendSchema), async (
   }
 });
 
-router.delete('/slots/lock', async (req: Request, res: Response, next: NextFunction) => {
+// -----------------------------------------------------------------------------
+// DELETE /api/slots/lock
+// Release a previously acquired lock across single or multiple slots
+// -----------------------------------------------------------------------------
+router.delete('/slots/lock', validateRequest(releaseSlotSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { resourceId, date, startTime, lockValue } = req.body;
+    const { resourceId, date, startTime, endTime, durationMinutes, lockValue } = req.body;
 
     if (!resourceId || !date || !startTime || !lockValue) {
       throw createError(400, 'resourceId, date, startTime, and lockValue are required');
     }
 
-    const released = await releaseLock(resourceId, date, startTime, lockValue);
+    let slotTimes = [startTime];
+    if (endTime || durationMinutes) {
+      const resource = await prisma.resource.findUnique({
+        where: { id: resourceId },
+        select: { slotDurationMinutes: true },
+      });
+      const slotDuration = resource?.slotDurationMinutes || 60;
+      let effectiveEndTime = endTime;
+      if (!effectiveEndTime && durationMinutes) {
+        const [sh, sm] = startTime.split(':').map(Number);
+        const endTotal = sh * 60 + sm + Number(durationMinutes);
+        effectiveEndTime = `${String(Math.floor(endTotal / 60)).padStart(2, '0')}:${String(endTotal % 60).padStart(2, '0')}`;
+      }
+      if (effectiveEndTime) {
+        slotTimes = getInterveningSlots(startTime, effectiveEndTime, slotDuration);
+      }
+    }
 
-    res.json({ success: released });
+    const released = await releaseMultiSlotLock(resourceId, date, slotTimes, lockValue);
+
+    res.json({ success: true, released, releasedSlots: slotTimes });
   } catch (err) {
     next(err);
   }
@@ -622,10 +736,10 @@ router.post('/bookings/:id/confirm-test', validateRequest(idParamSchema), async 
 router.post('/bookings/:id/upi/confirm', validateRequest(upiConfirmSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = req.params.id as string;
-    const { upiId } = req.body;
+    const { upiId, upiApp, utr } = req.body;
 
-    // Cryptographically secure UPI reference
-    const upiRef = `upi_${Date.now().toString(36)}_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
+    // Cryptographically secure UPI reference or supplied UTR
+    const upiRef = utr?.trim() || `upi_${Date.now().toString(36)}_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
 
     const { booking, alreadyConfirmed } = await confirmBookingWithConflictCheck({
       bookingId: id,

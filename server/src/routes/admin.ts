@@ -656,24 +656,29 @@ router.post('/bookings/walk-in', requireRole('STAFF', 'ADMIN', 'SUPER_ADMIN'), v
       throw createError(400, 'Cannot book a time slot in the past. Please select an upcoming available slot.');
     }
 
-    // Check for conflicting confirmed bookings or locks
-    const conflict = await prisma.booking.findFirst({
-      where: {
-        resourceId,
-        status: 'CONFIRMED',
-        startTime: { lt: endDt },
-        endTime: { gt: startDt },
-      },
-    });
+    // Check capacity across overlapping confirmed bookings
+      const totalCapacity = resource.capacity || 1;
+      const bookedCount = await prisma.booking.count({
+        where: {
+          resourceId,
+          status: 'CONFIRMED',
+          startTime: { lt: endDt },
+          endTime: { gt: startDt },
+        },
+      });
 
-    if (conflict) {
-      throw createError(409, 'This slot is already booked and confirmed.');
-    }
+      if (bookedCount >= totalCapacity) {
+        throw createError(409, 'All available units for this slot duration are already booked and confirmed.');
+      }
 
-    const totalAmount =
-      amountPaidCents !== undefined && amountPaidCents !== null
-        ? Number(amountPaidCents)
-        : resource.hourlyRateCents;
+    // Calculate duration and proportional pricing
+      const durationMinutes = (endDt.getTime() - startDt.getTime()) / (60 * 1000);
+      const calculatedAmountCents = Math.round((durationMinutes / 60) * resource.hourlyRateCents);
+
+      const totalAmount =
+        amountPaidCents !== undefined && amountPaidCents !== null
+          ? Number(amountPaidCents)
+          : calculatedAmountCents;
 
     const emailToRecord =
       customerEmail && customerEmail.trim()

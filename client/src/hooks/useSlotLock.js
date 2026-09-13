@@ -3,7 +3,7 @@ import { api } from '../api/client';
 import { toast } from 'sonner';
 
 export function useSlotLock() {
-  const [lockedSlot, setLockedSlot] = useState(null); // { resourceId, date, startTime, endTime }
+  const [lockedSlot, setLockedSlot] = useState(null); // { resourceId, date, startTime, endTime, durationMinutes, slotCount, slotTimes }
   const [lockValue, setLockValue] = useState(null);
   const [secondsRemaining, setSecondsRemaining] = useState(0);
   const timerRef = useRef(null);
@@ -26,18 +26,20 @@ export function useSlotLock() {
     }
   }, []);
 
-  // Acquire lock on a slot
-  const acquireSlotLock = useCallback(async (resourceId, date, startTime) => {
+  // Acquire lock on a slot or continuous multi-slot duration
+  const acquireSlotLock = useCallback(async (resourceId, date, startTime, durationMinutes = 60, endTime = null) => {
     try {
       const session = getSessionToken();
 
-      // Release previous lock if any
+      // Release previous lock if any (non-blocking in background)
       if (lockedSlot && lockValue) {
-        await api.delete('/slots/lock', {
+        api.delete('/slots/lock', {
           data: {
             resourceId: lockedSlot.resourceId,
             date: lockedSlot.date,
             startTime: lockedSlot.startTime,
+            endTime: lockedSlot.endTime,
+            durationMinutes: lockedSlot.durationMinutes,
             lockValue,
           },
         }).catch(() => {});
@@ -47,16 +49,22 @@ export function useSlotLock() {
         resourceId,
         date,
         startTime,
+        endTime,
+        durationMinutes,
         lockValue: session,
       });
 
       if (res.data.success) {
-        setLockedSlot({
+        const slotData = {
           resourceId,
           date,
           startTime,
           endTime: res.data.endTime,
-        });
+          durationMinutes: res.data.durationMinutes || durationMinutes,
+          slotCount: res.data.slotCount || 1,
+          slotTimes: res.data.slotTimes || [startTime],
+        };
+        setLockedSlot(slotData);
         setLockValue(session);
         setSecondsRemaining(res.data.expiresInSeconds || 600);
 
@@ -74,11 +82,13 @@ export function useSlotLock() {
           });
         }, 1000);
 
-        toast.success(`Slot reserved for 10 minutes.`);
-        return { success: true, slot: res.data };
+        const durationHours = slotData.durationMinutes / 60;
+        const hourLabel = durationHours > 1 ? `${durationHours} hours` : '1 hour';
+        toast.success(`Reserved ${hourLabel} for 10 minutes.`);
+        return { success: true, slot: slotData };
       }
     } catch (err) {
-      const msg = err.response?.data?.error || 'This slot is no longer available';
+      const msg = err.response?.data?.error || 'Selected slot is no longer available';
       toast.error(msg);
       return { success: false, error: msg };
     }
@@ -94,6 +104,8 @@ export function useSlotLock() {
           resourceId: lockedSlot.resourceId,
           date: lockedSlot.date,
           startTime: lockedSlot.startTime,
+          endTime: lockedSlot.endTime,
+          durationMinutes: lockedSlot.durationMinutes,
           lockValue,
         },
       });

@@ -248,6 +248,70 @@ export async function releaseLock(
 }
 
 /**
+ * Atomically acquire locks across multiple consecutive slot start times.
+ * If any slot cannot be locked (e.g. at capacity), rolls back all previously
+ * acquired slots in this batch and returns false.
+ */
+export async function acquireMultiSlotLock(
+  resourceId: string,
+  date: string,
+  slotTimes: string[],
+  lockValue: string,
+  availableCapacities: Record<string, number> = {}
+): Promise<boolean> {
+  const acquired: string[] = [];
+  for (const slotTime of slotTimes) {
+    const cap = availableCapacities[slotTime] !== undefined ? availableCapacities[slotTime] : 1;
+    const ok = await acquireLock(resourceId, date, slotTime, lockValue, cap);
+    if (!ok) {
+      // Rollback already acquired slots
+      for (const lockedTime of acquired) {
+        await releaseLock(resourceId, date, lockedTime, lockValue).catch(() => {});
+      }
+      return false;
+    }
+    acquired.push(slotTime);
+  }
+  return true;
+}
+
+/**
+ * Release locks across multiple slot start times.
+ */
+export async function releaseMultiSlotLock(
+  resourceId: string,
+  date: string,
+  slotTimes: string[],
+  lockValue: string
+): Promise<boolean> {
+  let anyReleased = false;
+  for (const slotTime of slotTimes) {
+    const ok = await releaseLock(resourceId, date, slotTime, lockValue).catch(() => false);
+    if (ok) anyReleased = true;
+  }
+  return anyReleased;
+}
+
+/**
+ * Extend TTL across multiple slot start times.
+ */
+export async function extendMultiSlotLock(
+  resourceId: string,
+  date: string,
+  slotTimes: string[],
+  lockValue: string,
+  extensionSeconds = LOCK_TTL_SECONDS
+): Promise<boolean> {
+  let allExtended = true;
+  for (const slotTime of slotTimes) {
+    const ok = await extendLock(resourceId, date, slotTime, lockValue, extensionSeconds).catch(() => false);
+    if (!ok) allExtended = false;
+  }
+  return allExtended;
+}
+
+
+/**
  * Check if a slot is currently fully locked for exclusive resources
  */
 export async function isLocked(
@@ -329,4 +393,40 @@ export async function deleteOtpValue(keyName: string): Promise<void> {
     }
   }
   memoryOtps.delete(key);
+}
+
+export async function storeCustomerOtp(email: string, tenantId: string, otp: string, ttlSeconds = 600): Promise<void> {
+  const key = `customer_otp:${tenantId}:${email.toLowerCase().trim()}`;
+  if (redis && isRedisConnected) {
+    try {
+      await redis.set(key, otp, 'EX', ttlSeconds);
+      return;
+    } catch {
+      // Fallback to memory
+    }
+  }
+  memoryOtps.set(key, { otp, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+
+export async function verifyCustomerOtp(email: string, tenantId: string, candidateOtp: string): Promise<boolean> {
+  const key = `customer_otp:${tenantId}:${email.toLowerCase().trim()}`;
+  if (redis && isRedisConnected) {
+    try {
+      const stored = await redis.get(key);
+      if (stored && stored === candidateOtp.trim()) {
+        await redis.del(key);
+        return true;
+      }
+      return false;
+    } catch {
+      // Fallback to memory
+    }
+  }
+
+  const stored = memoryOtps.get(key);
+  if (stored && stored.expiresAt > Date.now() && stored.otp === candidateOtp.trim()) {
+    memoryOtps.delete(key);
+    return true;
+  }
+  return false;
 }
