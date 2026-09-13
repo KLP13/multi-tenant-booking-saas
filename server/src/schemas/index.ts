@@ -223,6 +223,8 @@ export const lockSlotSchema = {
     resourceId: uuidSchema,
     date: dateStringSchema,
     startTime: timeStringSchema,
+    endTime: timeStringSchema.optional(),
+    durationMinutes: z.coerce.number().int().min(5).max(1440).optional(),
     lockValue: z.string().trim().min(1, 'lockValue is required to acquire lock'),
   }),
 };
@@ -230,9 +232,23 @@ export const lockSlotSchema = {
 export const lockSlotExtendSchema = {
   body: z.object({
     resourceId: uuidSchema,
-    startTime: isoDateTimeSchema,
+    date: dateStringSchema.optional(),
+    startTime: z.string().trim().min(1, 'startTime is required'),
+    endTime: timeStringSchema.optional(),
+    durationMinutes: z.coerce.number().int().min(5).max(1440).optional(),
     lockValue: z.string().trim().min(1, 'lockValue is required to extend lock'),
-    extendSeconds: z.coerce.number().int().min(10).max(600).optional(),
+    extendSeconds: z.coerce.number().int().min(10).max(1800).optional(),
+  }),
+};
+
+export const releaseSlotSchema = {
+  body: z.object({
+    resourceId: uuidSchema,
+    date: dateStringSchema,
+    startTime: timeStringSchema,
+    endTime: timeStringSchema.optional(),
+    durationMinutes: z.coerce.number().int().min(5).max(1440).optional(),
+    lockValue: z.string().trim().min(1, 'lockValue is required to release lock'),
   }),
 };
 
@@ -261,7 +277,9 @@ export const upiConfirmSchema = {
     id: uuidSchema,
   }),
   body: z.object({
-    utr: z.string().trim().min(6, 'UTR / Reference must be at least 6 characters').max(50),
+    utr: z.string().trim().max(100).optional(),
+    upiId: z.string().trim().max(100).optional(),
+    upiApp: z.string().trim().max(50).optional(),
     amount: currencyAmountSchema.optional(),
   }),
 };

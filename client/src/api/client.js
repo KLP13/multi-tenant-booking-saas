@@ -9,6 +9,16 @@ export const api = axios.create({
 
 // Attach Authorization header if JWT token exists in localStorage
 api.interceptors.request.use((config) => {
+  // If caller already provided an explicit Authorization header, preserve it!
+  if (config.headers?.Authorization || config.headers?.authorization) {
+    return config;
+  }
+
+  // Customer portal routes must never inherit admin session credentials
+  if (config.url && config.url.includes('/customer/')) {
+    return config;
+  }
+
   const token = localStorage.getItem('saas_auth_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

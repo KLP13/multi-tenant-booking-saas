@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../api/client';
+import { toast } from 'sonner';
 import { Calendar as CalendarIcon, Clock, CheckCircle2, Lock, RotateCw } from 'lucide-react';
 
 const getLocalDateString = (d = new Date()) => {
@@ -17,6 +18,33 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot, refresh
   const [closedMessage, setClosedMessage] = useState('');
   const [showConcluded, setShowConcluded] = useState(false);
   const [periodFilter, setPeriodFilter] = useState('ALL');
+  const [selectedDurationSlots, setSelectedDurationSlots] = useState(1);
+  const [hoveredStartTime, setHoveredStartTime] = useState(null);
+
+  const slotDuration = resource?.slotDurationMinutes || 60;
+  const durationOptions = [
+    { slots: 1, label: slotDuration === 60 ? '1 Hour' : `${slotDuration}m` },
+    { slots: 2, label: slotDuration === 60 ? '2 Hours' : `${(slotDuration * 2) / 60}h` },
+    { slots: 3, label: slotDuration === 60 ? '3 Hours' : `${(slotDuration * 3) / 60}h` },
+    { slots: 4, label: slotDuration === 60 ? '4 Hours' : `${(slotDuration * 4) / 60}h` },
+  ];
+
+  const checkSlotSpan = (slot, slotList, count) => {
+    if (count <= 1) {
+      return { canBook: !slot.isPast && slot.status === 'available', endSlot: slot };
+    }
+    const idx = slotList.findIndex((s) => s.startTime === slot.startTime);
+    if (idx === -1 || idx + count > slotList.length) {
+      return { canBook: false, reason: 'Duration extends past operating hours' };
+    }
+    for (let i = 0; i < count; i++) {
+      const s = slotList[idx + i];
+      if (s.isPast || s.status === 'booked' || s.status === 'blocked' || s.status === 'locked') {
+        return { canBook: false, reason: `Slot ${s.startTime}-${s.endTime} is unavailable` };
+      }
+    }
+    return { canBook: true, endSlot: slotList[idx + count - 1] };
+  };
 
   // Generate next 7 days for quick tabs using user's local timezone
   const dates = Array.from({ length: 7 }, (_, i) => {
@@ -167,6 +195,33 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot, refresh
           borderRadius: 'var(--radius-xs)',
           border: '1px solid var(--border)',
         }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingRight: '12px', borderRight: '1px solid var(--border)', marginRight: '4px' }}>
+            <span style={{ fontSize: '11px', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <Clock size={12} /> Duration:
+            </span>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              {durationOptions.map((opt) => (
+                <button
+                  key={opt.slots}
+                  type="button"
+                  onClick={() => setSelectedDurationSlots(opt.slots)}
+                  style={{
+                    padding: '3px 9px',
+                    fontSize: '11px',
+                    fontWeight: selectedDurationSlots === opt.slots ? '700' : '500',
+                    borderRadius: '12px',
+                    border: selectedDurationSlots === opt.slots ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    backgroundColor: selectedDurationSlots === opt.slots ? 'var(--accent)' : '#FFFFFF',
+                    color: selectedDurationSlots === opt.slots ? '#FFFFFF' : 'var(--text-primary)',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
             {[
               { id: 'ALL', label: 'All Slots' },
@@ -273,22 +328,52 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot, refresh
         <>
           <div className="slot-grid">
             {displayedSlots.map((slot) => {
-              const isSelected = selectedSlot?.startTime === slot.startTime && selectedSlot?.date === selectedDate;
+              const isSelected = selectedSlot?.date === selectedDate && (
+                (selectedSlot.slotTimes && selectedSlot.slotTimes.includes(slot.startTime)) ||
+                (selectedSlot.startTime && selectedSlot.endTime && slot.startTime >= selectedSlot.startTime && slot.endTime <= selectedSlot.endTime) ||
+                selectedSlot.startTime === slot.startTime
+              );
               const isPast = slot.isPast;
               const isBooked = slot.status === 'booked';
               const isLocked = slot.status === 'locked';
               const isBlocked = slot.status === 'blocked';
               const isUnavailable = isPast || isBooked || isLocked || isBlocked;
 
+              const spanCheck = checkSlotSpan(slot, baseSlots, selectedDurationSlots);
+              const cannotFitDuration = !isUnavailable && selectedDurationSlots > 1 && !spanCheck.canBook;
+
+              // Check if currently in hover preview
+              let isHovered = false;
+              if (hoveredStartTime) {
+                const hIdx = baseSlots.findIndex(s => s.startTime === hoveredStartTime);
+                const sIdx = baseSlots.findIndex(s => s.startTime === slot.startTime);
+                if (hIdx !== -1 && sIdx >= hIdx && sIdx < hIdx + selectedDurationSlots) {
+                  isHovered = true;
+                }
+              }
+
               return (
                 <div
                   key={slot.startTime}
+                  onMouseEnter={() => !isUnavailable && setHoveredStartTime(slot.startTime)}
+                  onMouseLeave={() => setHoveredStartTime(null)}
                   onClick={() => {
                     if (!isUnavailable) {
-                      onSelectSlot(slot, selectedDate);
+                      if (spanCheck.canBook) {
+                        const durationMins = selectedDurationSlots * slotDuration;
+                        const computedEndTime = spanCheck.endSlot.endTime;
+                        onSelectSlot(slot, selectedDate, durationMins, computedEndTime);
+                      } else {
+                        toast.error(spanCheck.reason || `Cannot book ${selectedDurationSlots} continuous hours starting at ${slot.startTime}`);
+                      }
                     }
                   }}
                   className={`slot-card ${isSelected ? 'selected' : ''} ${isPast ? 'slot-past' : ''} ${isBooked ? 'slot-booked' : ''} ${isLocked ? 'slot-locked' : ''} ${isBlocked ? 'slot-booked' : ''}`}
+                  style={{
+                    opacity: cannotFitDuration ? 0.6 : 1,
+                    outline: isHovered && !isSelected ? '2px dashed var(--accent)' : 'none',
+                    cursor: isUnavailable || cannotFitDuration ? 'not-allowed' : 'pointer',
+                  }}
                 >
                   <div className="slot-time">{slot.startTime}</div>
                   <div className="slot-sub">until {slot.endTime}</div>
@@ -312,7 +397,11 @@ export default function SlotGrid({ resource, onSelectSlot, selectedSlot, refresh
                       </span>
                     ) : isSelected ? (
                       <span className="badge badge-available" style={{ backgroundColor: 'rgba(255,255,255,0.2)', color: '#FFFFFF', borderColor: 'transparent' }}>
-                        <CheckCircle2 size={10} /> Selected
+                        <CheckCircle2 size={10} /> {selectedSlot?.slotCount > 1 ? `${selectedSlot.slotCount}h Reserved` : 'Selected'}
+                      </span>
+                    ) : cannotFitDuration ? (
+                      <span className="badge" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C', borderColor: '#FECACA', fontSize: '10px' }} title={spanCheck.reason}>
+                        Can't fit {selectedDurationSlots}h
                       </span>
                     ) : slot.totalCapacity > 1 ? (
                       slot.remainingCapacity === 1 ? (

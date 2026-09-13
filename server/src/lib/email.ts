@@ -1,3 +1,4 @@
+import { generateBookingAccessToken } from '../middleware/customerAuth';
 import { logger } from './logger';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -357,7 +358,12 @@ export async function sendBookingConfirmationEmail(params: {
 
   const timeStr = `${start.toLocaleTimeString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true })} - ${end.toLocaleTimeString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: true })}`;
   const totalInr = (booking.totalAmountCents / 100).toFixed(2);
-  const myBookingsUrl = `${CLIENT_URL}/${tenant.slug}`;
+  const bookingToken = generateBookingAccessToken({
+    bookingId: booking.id,
+    email: booking.customerEmail,
+    tenantId: tenant.id,
+  });
+  const myBookingsUrl = `${CLIENT_URL}/${tenant.slug}?token=${bookingToken}`;
   const gCalDates = `${start.toISOString().replace(/[-:]/g, '').split('.')[0]}Z/${end.toISOString().replace(/[-:]/g, '').split('.')[0]}Z`;
   const gCalTitle = encodeURIComponent(`${resource.name} at ${tenant.name}`);
   const gCalDetails = encodeURIComponent(`Confirmed reservation with ${tenant.name}.\nBooking Reference: ${booking.id}\nCustomer: ${booking.customerName}\nManage: ${myBookingsUrl}`);
@@ -661,5 +667,61 @@ export async function sendStaffInviteEmail(params: {
     });
   } catch (err) {
     console.error('Failed to send staff invitation email:', err);
+  }
+}
+
+/**
+ * Sends a 6-digit verification OTP to a customer requesting portal access
+ */
+export async function sendCustomerPortalOtp(email: string, otp: string, businessName: string): Promise<void> {
+  const isDev = !process.env.SMTP_HOST && !process.env.RESEND_API_KEY;
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 540px; margin: 0 auto; padding: 32px; background-color: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px;">
+      <div style="margin-bottom: 24px; border-bottom: 1px solid #F1F5F9; padding-bottom: 16px;">
+        <span style="font-size: 18px; font-weight: 700; color: #0F172A; letter-spacing: -0.02em;">${businessName || 'Bespoke Bookings'}</span>
+      </div>
+      <h2 style="font-size: 20px; color: #0F172A; margin-bottom: 8px; font-weight: 700;">Your Customer Verification Code</h2>
+      <p style="font-size: 14px; color: #475569; line-height: 1.6; margin-bottom: 20px;">
+        Use the following 6-digit verification code to securely access and manage your bookings at <strong>${businessName || 'our business'}</strong>:
+      </p>
+      
+      <div style="text-align: center; margin: 28px 0;">
+        <div style="display: inline-block; padding: 14px 32px; background-color: #F8FAFC; border: 2px dashed #059669; border-radius: 10px; font-size: 32px; font-weight: 800; letter-spacing: 0.25em; color: #059669; font-family: monospace;">
+          ${otp}
+        </div>
+        <div style="font-size: 12px; color: #64748B; margin-top: 10px;">
+          Valid for 10 minutes &bull; Do not share this code
+        </div>
+      </div>
+
+      <p style="font-size: 13px; color: #64748B; line-height: 1.5;">
+        If you did not request to view your reservations, you can safely ignore this email. No one can access your bookings without this code.
+      </p>
+
+      <div style="margin-top: 28px; border-top: 1px solid #F1F5F9; padding-top: 16px; font-size: 11px; color: #94A3B8;">
+        &copy; 2026 ${businessName || 'Bespoke Bookings'} &bull; Secure Customer Portal
+      </div>
+    </div>
+  `;
+
+  if (isDev) {
+    console.log('\n--------------------------------------------------');
+    console.log(`📧 [DEV EMAIL] Customer Access OTP for: ${email}`);
+    console.log(`🏢 Business: ${businessName}`);
+    console.log(`🔑 Verification Code: ${otp}`);
+    console.log('──────────────────────────────────────────────────\n');
+  }
+
+  try {
+    await sendEmailMessage({
+      from: process.env.SMTP_FROM || `"${businessName || 'Bespoke Bookings'}" <noreply@bespokebookings.com>`,
+      to: email,
+      subject: `Your Booking Access Code: ${otp} - ${businessName || 'Bespoke Bookings'}`,
+      text: `Your verification code is: ${otp}. It will expire in 10 minutes.`,
+      html,
+    });
+  } catch (err) {
+    console.error('Failed to send customer portal OTP email:', err);
   }
 }

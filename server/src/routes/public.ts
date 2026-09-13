@@ -1,3 +1,8 @@
+import { otpRateLimiter } from '../middleware/rateLimiter';
+import crypto from 'crypto';
+import { requireCustomerAuth, generateCustomerToken } from '../middleware/customerAuth';
+import { storeCustomerOtp, verifyCustomerOtp } from '../lib/redis';
+import { sendCustomerPortalOtp } from '../lib/email';
 import { Router, Request, Response, NextFunction } from 'express';
 import { prisma } from '../lib/prisma';
 import { createError } from '../middleware/errorHandler';
@@ -231,17 +236,127 @@ router.get('/resources/:id/slots', async (req: Request, res: Response, next: Nex
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GET /api/tenants/:slug/customer/bookings?email=...
-// Returns all bookings for a customer under this tenant
+
 // ─────────────────────────────────────────────────────────────────────────────
-router.get('/tenants/:slug/customer/bookings', async (req: Request, res: Response, next: NextFunction) => {
+// CUSTOMER PORTAL AUTHENTICATION
+// ─────────────────────────────────────────────────────────────────────────────
+
+// POST /api/tenants/:slug/customer/auth/send-otp
+router.post('/tenants/:slug/customer/auth/send-otp', otpRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const slug = req.params.slug as string;
-    const email = (req.query.email as string || '').trim().toLowerCase();
+    const email = (req.body.email as string || '').trim().toLowerCase();
 
-    if (!email) {
-      throw createError(400, 'Customer email is required to view bookings');
+    if (!email || !email.includes('@')) {
+      throw createError(400, 'A valid email address is required');
     }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { slug },
+      select: { id: true, name: true },
+    });
+
+    if (!tenant) {
+      throw createError(404, 'Business not found');
+    }
+
+    // Generate cryptographically secure 6-digit OTP
+    const otp = crypto.randomInt(100000, 999999).toString();
+    await storeCustomerOtp(email, tenant.id, otp, 600);
+
+    // Send OTP via email (and dev logger)
+    await sendCustomerPortalOtp(email, otp, tenant.name);
+
+    res.json({
+      success: true,
+      message: `Verification code sent to ${email}`,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/tenants/:slug/customer/auth/verify-otp
+router.post('/tenants/:slug/customer/auth/verify-otp', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const slug = req.params.slug as string;
+    const email = (req.body.email as string || '').trim().toLowerCase();
+    const otp = (req.body.otp as string || '').trim();
+
+    if (!email || !otp) {
+      throw createError(400, 'Email and 6-digit verification code are required');
+    }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { slug },
+      select: { id: true, name: true },
+    });
+
+    if (!tenant) {
+      throw createError(404, 'Business not found');
+    }
+
+    const isValid = await verifyCustomerOtp(email, tenant.id, otp);
+    if (!isValid) {
+      throw createError(401, 'Invalid or expired verification code. Please request a new code.');
+    }
+
+    const customerToken = generateCustomerToken({
+      email,
+      tenantId: tenant.id,
+    });
+
+    res.json({
+      success: true,
+      customerToken,
+      email,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/tenants/:slug/customer/auth/google
+router.post('/tenants/:slug/customer/auth/google', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const slug = req.params.slug as string;
+    const email = (req.body.email as string || '').trim().toLowerCase();
+
+    if (!email || !email.includes('@')) {
+      throw createError(400, 'Valid customer email is required');
+    }
+
+    const tenant = await prisma.tenant.findUnique({
+      where: { slug },
+      select: { id: true },
+    });
+
+    if (!tenant) {
+      throw createError(404, 'Business not found');
+    }
+
+    const customerToken = generateCustomerToken({
+      email,
+      tenantId: tenant.id,
+    });
+
+    res.json({
+      success: true,
+      customerToken,
+      email,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/tenants/:slug/customer/bookings
+// Returns all bookings for a customer under this tenant
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/tenants/:slug/customer/bookings', requireCustomerAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const slug = req.params.slug as string;
+    const authenticatedEmail = req.customer!.email.toLowerCase();
 
     const tenant = await prisma.tenant.findUnique({
       where: { slug },
@@ -252,11 +367,15 @@ router.get('/tenants/:slug/customer/bookings', async (req: Request, res: Respons
       throw createError(404, 'Business not found');
     }
 
+    if (req.customer!.tenantId && req.customer!.tenantId !== tenant.id) {
+      throw createError(403, 'Your authorization token belongs to a different business');
+    }
+
     const bookings = await prisma.booking.findMany({
       where: {
         tenantId: tenant.id,
         customerEmail: {
-          equals: email,
+          equals: authenticatedEmail,
           mode: 'insensitive',
         },
       },
@@ -284,7 +403,7 @@ router.get('/tenants/:slug/customer/bookings', async (req: Request, res: Respons
       },
     });
 
-    res.json({ bookings, tenant });
+    res.json({ bookings, tenant, customerEmail: authenticatedEmail });
   } catch (err) {
     next(err);
   }
@@ -294,15 +413,11 @@ router.get('/tenants/:slug/customer/bookings', async (req: Request, res: Respons
 // POST /api/tenants/:slug/customer/bookings/:id/cancel
 // Allows customer to cancel their booking
 // ─────────────────────────────────────────────────────────────────────────────
-router.post('/tenants/:slug/customer/bookings/:id/cancel', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/tenants/:slug/customer/bookings/:id/cancel', requireCustomerAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const slug = req.params.slug as string;
     const id = req.params.id as string;
-    const email = (req.body.email as string || '').trim().toLowerCase();
-
-    if (!email) {
-      throw createError(400, 'Customer email is required to cancel reservation');
-    }
+    const authenticatedEmail = req.customer!.email.toLowerCase();
 
     const tenant = await prisma.tenant.findUnique({
       where: { slug },
@@ -327,7 +442,7 @@ router.post('/tenants/:slug/customer/bookings/:id/cancel', async (req: Request, 
       throw createError(404, 'Booking not found');
     }
 
-    if (booking.customerEmail.toLowerCase() !== email) {
+    if (booking.customerEmail.toLowerCase() !== authenticatedEmail) {
       throw createError(403, 'You are not authorized to cancel this booking');
     }
 
